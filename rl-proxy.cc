@@ -6,176 +6,239 @@
 #include "fw/logging.hh"
 #include <boost/bind.hpp>
 #include <boost/lexical_cast.hpp>
+#include <boost/tuple/tuple.hpp>
+#include <fnmatch.h>
 
 using namespace fw;
 
 #define SEC2MS(s) (s*1000)
 
-void sock_copy(task::socket &a, task::socket &b, buffer::slice rb) {
-    for (;;) {
-        pollfd fds[2];
-        fds[0].events = EPOLLIN;
-        fds[0].fd = a.s.fd;
-        fds[1].events = EPOLLIN;
-        fds[1].fd = b.s.fd;
-        if (!task::poll(fds, 2, 0)) break;
-        if (fds[0].revents) {
-            ssize_t nr = a.recv(rb.data(), rb.size());
-            if (nr <= 0) break;
-            ssize_t nw = b.send(rb.data(), nr);
-            if (nw != nr) break;
-        }
-        if (fds[1].revents) {
-            ssize_t nr = b.recv(rb.data(), rb.size());
-            if (nr <= 0) break;
-            ssize_t nw = a.send(rb.data(), nr);
-            if (nw != nr) break;
+std::string backend_host = "web619";
+uint16_t backend_port = 6006;
 
+static http_response resp_503(503, "Gateway Timeout");
+
+class httpd : boost::noncopyable {
+public:
+    struct request {
+
+        request(http_request &req_, task::socket &sock_)
+            : req(req_), sock(sock_), resp_sent(false) {}
+
+        uri get_uri() {
+            uri tmp;
+            tmp.host = "localhost";
+            tmp.scheme = "http";
+            tmp.path = req.uri.c_str();
+            return tmp.compose();
+        }
+
+        //! send response to this request
+        ssize_t send_response(const http_response &resp) {
+            if (resp_sent) return 0;
+            resp_sent = true;
+            std::string data = resp.data();
+            ssize_t nw = sock.send(data.data(), data.size());
+            // TODO: send body?
+            return nw;
+        }
+
+        //! the ip of the host making the request
+        //! might use the X-Forwarded-For header
+        std::string request_ip(bool use_xff=false) const {
+#if 0
+            if (use_xff) {
+                struct evkeyvalq *hdrs = evhttp_request_get_input_headers(req);
+                const char *xff = evhttp_find_header(hdrs, "X-Forwarded-For");
+                if (xff) {
+                    // pick the first addr    
+                    int i;
+                    for (i=0; *xff && i<256 && !isdigit((unsigned char)*xff); i++, xff++) {}
+                    if (*xff && i < 256) {
+                        // now, find the end 
+                        const char *e = xff;
+                        for (i = 0; *e && i<256 && (isdigit((unsigned char)*e) || *e == '.'); i++, e++) {}
+                        if (i < 256 && e >= xff + 7 ) {
+                            return std::string(xff, e - xff);
+                        }
+                    }
+                }
+            }
+            if (req->remote_host) {
+                return req->remote_host;
+            }
+#endif
+            return "";
+        }
+
+
+
+        ~request() {
+            // ensure a response is sent
+            send_response(http_response(404, "Not Found"));
+        }
+
+        http_request &req;
+        task::socket &sock;
+        bool resp_sent;
+    };
+
+    typedef boost::function<void (request &)> func_type;
+    typedef boost::tuple<std::string, func_type> tuple_type;
+    typedef std::vector<tuple_type> map_type;
+
+    httpd() : sock(AF_INET, SOCK_STREAM) {
+        sock.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1);
+    }
+
+    void add_callback(const std::string &pattern, const func_type &f) {
+      _map.push_back(tuple_type(pattern, f));
+    }
+
+    void serve(const std::string &ipaddr, uint16_t port) {
+        address baddr(ipaddr.c_str(), port);
+        sock.bind(baddr);
+        sock.getsockname(baddr);
+        LOG(INFO) << "listening on: " << baddr;
+        task::spawn(boost::bind(&httpd::listen_task, this));
+    }
+
+private:
+    task::socket sock;
+    map_type _map;
+
+    void listen_task() {
+        sock.listen();
+
+        for (;;) {
+            address client_addr;
+            int fd;
+            while ((fd = sock.accept(client_addr, 0)) > 0) {
+                task::spawn(boost::bind(&httpd::client_task, this, fd), 0, 4*1024*1024);
+            }
         }
     }
-}
 
-void send_503_reply(task::socket &s) {
-    http_response resp(503, "Gateway Timeout");
-    std::string data = resp.data();
-    ssize_t nw = s.send(data.data(), data.size());
-    (void)nw; // ignore
-}
+    void client_task(int fd) {
+        task::socket s(fd);
+        buffer buf(4*1024);
+        http_parser parser;
 
-void proxy_task(int sock) {
-    task::socket s(sock);
-    buffer buf(4*1024);
-    http_parser parser;
-    http_request req;
-    req.parser_init(&parser);
-
-    buffer::slice rb = buf(0);
-    for (;;) {
-        ssize_t nr = s.recv(rb.data(), rb.size(), SEC2MS(5));
-        if (nr < 0) { goto request_read_error; }
-        if (req.parse(&parser, rb.data(), nr)) break;
-        if (nr == 0) return;
+        buffer::slice rb = buf(0);
+        for (;;) {
+            http_request req;
+            req.parser_init(&parser);
+            for (;;) {
+                ssize_t nr = s.recv(rb.data(), rb.size(), SEC2MS(5));
+                if (nr < 0) return;
+                if (req.parse(&parser, rb.data(), nr)) break;
+                if (nr == 0) return;
+            }
+            // handle request
+            handle_request(req, s);
+        }
     }
+
+    void handle_request(http_request &req, task::socket &s) {
+        request r(req, s);
+        // not super efficient, but good enough
+        for (map_type::const_iterator i= _map.begin(); i!= _map.end(); i++) {
+            DVLOG(5) << "matching pattern: " << i->get<0>();
+            if (fnmatch(i->get<0>().c_str(), req.uri.c_str(), 0) == 0) {
+                i->get<1>()(r);
+                // don't cancel user owned requests
+                //if (req && req->req && req->req->kind != EVHTTP_RESPONSE && !(req->req->flags & EVHTTP_USER_OWNED)) {
+                //    DVLOG(5) << "no reply, canceling request";
+                //    evhttp_cancel_request(req->req);
+                //}
+                return;
+            }
+        }
+    }
+};
+
+void proxy_request(httpd::request &h) {
+    LOG(INFO) << h.req.method << " " << h.req.uri;
 
     try {
-        uri u(req.uri);
-        u.normalize();
-        LOG(INFO) << req.method << " " << u.compose();
-
+        // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
 
-        if (req.method == "CONNECT") {
-            ssize_t pos = u.path.find(':');
-            u.host = u.path.substr(1, pos-1);
-            u.port = boost::lexical_cast<uint16_t>(u.path.substr(pos+1));
-            if (cs.dial(u.host.c_str(), u.port, SEC2MS(10))) {
-                goto request_connect_error;
-            }
-
-            http_response resp(200, "Connected ok");
-            std::string data = resp.data();
-            ssize_t nw = s.send(data.data(), data.size(), SEC2MS(5));
-
-            sock_copy(s, cs, rb);
-            return;
-        } else {
-            if (u.port == 0) u.port = 80;
-            if (cs.dial(u.host.c_str(), u.port, SEC2MS(10))) {
-                goto request_connect_error;
-            }
-
-            http_request r(req.method, u.compose(true));
-            // HTTP/1.1 requires host header
-            r.append_header("Host", u.host);
-            r.headers = req.headers;
-            std::string data = r.data();
-            ssize_t nw = cs.send(data.data(), data.size(), SEC2MS(5));
-            if (nw <= 0) { goto request_send_error; }
-            if (!req.body.empty()) {
-                nw = cs.send(req.body.data(), req.body.size(), SEC2MS(5));
-                if (nw <= 0) { goto request_send_error; }
-            }
-
-            http_response resp(&r);
-            resp.parser_init(&parser);
-            bool headers_sent = false;
-            for (;;) {
-                ssize_t nr = cs.recv(rb.data(), rb.size(), SEC2MS(5));
-                if (nr < 0) { goto response_read_error; }
-                bool complete = resp.parse(&parser, rb.data(), nr);
-                if (headers_sent == false && resp.status_code) {
-                    headers_sent = true;
-                    data = resp.data();
-                    nw = s.send(data.data(), data.size());
-                    if (nw <= 0) { goto response_send_error; }
-                }
-
-                if (resp.body.size()) {
-                    if (resp.header_string("Transfer-Encoding") == "chunked") {
-                        char lenbuf[64];
-                        int len = snprintf(lenbuf, sizeof(lenbuf)-1, "%zx\r\n", resp.body.size());
-                        resp.body.insert(0, lenbuf, len);
-                        resp.body.append("\r\n");
-                    }
-                    nw = s.send(resp.body.data(), resp.body.size());
-                    if (nw <= 0) { goto response_send_error; }
-                    resp.body.clear();
-                }
-                if (complete) {
-                    // send end chunk
-                    if (resp.header_string("Transfer-Encoding") == "chunked") {
-                        nw = s.send("0\r\n\r\n", 5);
-                    }
-                    break;
-                }
-                if (nr == 0) { goto response_read_error; }
-            }
-            return;
+        if (cs.dial(backend_host.c_str(), backend_port, SEC2MS(10))) {
+            goto request_connect_error;
         }
+
+        http_request r(h.req.method, h.req.uri);
+        r.headers = h.req.headers;
+        std::string data = r.data();
+        ssize_t nw = cs.send(data.data(), data.size(), SEC2MS(5));
+        if (nw <= 0) { goto request_send_error; }
+        if (!h.req.body.empty()) {
+            nw = cs.send(h.req.body.data(), h.req.body.size(), SEC2MS(5));
+            if (nw <= 0) { goto request_send_error; }
+        }
+
+        http_parser parser;
+        http_response resp(&r);
+        resp.parser_init(&parser);
+        bool headers_sent = false;
+        char buf[4096];
+        for (;;) {
+            ssize_t nr = cs.recv(buf, sizeof(buf), SEC2MS(5));
+            if (nr < 0) { goto response_read_error; }
+            bool complete = resp.parse(&parser, buf, nr);
+            if (headers_sent == false && resp.status_code) {
+                headers_sent = true;
+                nw = h.send_response(resp);
+                if (nw <= 0) { goto response_send_error; }
+            }
+
+            if (resp.body.size()) {
+                if (resp.header_string("Transfer-Encoding") == "chunked") {
+                    char lenbuf[64];
+                    int len = snprintf(lenbuf, sizeof(lenbuf)-1, "%zx\r\n", resp.body.size());
+                    resp.body.insert(0, lenbuf, len);
+                    resp.body.append("\r\n");
+                }
+                nw = h.sock.send(resp.body.data(), resp.body.size());
+                if (nw <= 0) { goto response_send_error; }
+                resp.body.clear();
+            }
+            if (complete) {
+                // send end chunk
+                if (resp.header_string("Transfer-Encoding") == "chunked") {
+                    nw = h.sock.send("0\r\n\r\n", 5);
+                }
+                break;
+            }
+            if (nr == 0) { goto response_read_error; }
+        }
+        return;
     } catch (std::exception &e) {
-        LOG(ERROR) << "exception error: " << req.uri << " : " << e.what();
+        LOG(ERROR) << "exception error: " << h.req.uri << " : " << e.what();
         return;
     }
-request_read_error:
-    PLOG(ERROR) << "request read error";
-    return;
 request_connect_error:
-    PLOG(ERROR) << "request connect error " << req.method << " " << req.uri;
-    send_503_reply(s);
+    PLOG(ERROR) << "request connect error " << h.req.method << " " << h.req.uri;
+    h.send_response(resp_503);
     return;
 request_send_error:
-    PLOG(ERROR) << "request send error: " << req.method << " " << req.uri;
-    send_503_reply(s);
+    PLOG(ERROR) << "request send error: " << h.req.method << " " << h.req.uri;
+    h.send_response(resp_503);
     return;
 response_read_error:
-    PLOG(ERROR) << "response read error: " << req.method << " " << req.uri;
-    send_503_reply(s);
+    PLOG(ERROR) << "response read error: " << h.req.method << " " << h.req.uri;
+    h.send_response(resp_503);
     return;
 response_send_error:
-    PLOG(ERROR) << "response send error: " << req.method << " " << req.uri;
+    PLOG(ERROR) << "response send error: " << h.req.method << " " << h.req.uri;
     return;
-}
-
-void listen_task() {
-    task::socket s(AF_INET, SOCK_STREAM);
-    s.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1);
-    address addr("0.0.0.0", 8080);
-    s.bind(addr);
-    s.getsockname(addr);
-    LOG(INFO) << "listening on: " << addr;
-    s.listen();
-
-    for (;;) {
-        address client_addr;
-        int sock;
-        while ((sock = s.accept(client_addr, 0)) > 0) {
-            task::spawn(boost::bind(proxy_task, sock), 0, 4*1024*1024);
-        }
-    }
 }
 
 int main(int argc, char *argv[]) {
     runner::init();
-    task::spawn(listen_task);
+    httpd proxy;
+    proxy.add_callback("*", proxy_request);
+    proxy.serve("0.0.0.0", 8080);
     return runner::main();
 }
