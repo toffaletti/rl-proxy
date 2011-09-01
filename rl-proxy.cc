@@ -7,6 +7,7 @@
 #include <boost/bind.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/tuple/tuple.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <fnmatch.h>
 
 using namespace fw;
@@ -21,13 +22,22 @@ static http_response resp_503(503, "Gateway Timeout");
 class httpd : boost::noncopyable {
 public:
     struct request {
-
         request(http_request &req_, task::socket &sock_)
             : req(req_), sock(sock_), resp_sent(false) {}
 
+        //! compose a uri from the request uri
         uri get_uri() {
+            std::string host = req.header_string("Host");
+            if (boost::starts_with(req.uri, "http://")) {
+                return req.uri;
+            }
+
+            if (host.empty()) {
+                // just make up a host
+                host = "localhost";
+            }
             uri tmp;
-            tmp.host = "localhost";
+            tmp.host = host;
             tmp.scheme = "http";
             tmp.path = req.uri.c_str();
             return tmp.compose();
@@ -70,8 +80,6 @@ public:
             }
             return "";
         }
-
-
 
         ~request() {
             // ensure a response is sent
@@ -146,11 +154,6 @@ private:
             DVLOG(5) << "matching pattern: " << i->get<0>();
             if (fnmatch(i->get<0>().c_str(), req.uri.c_str(), 0) == 0) {
                 i->get<1>()(r);
-                // don't cancel user owned requests
-                //if (req && req->req && req->req->kind != EVHTTP_RESPONSE && !(req->req->flags & EVHTTP_USER_OWNED)) {
-                //    DVLOG(5) << "no reply, canceling request";
-                //    evhttp_cancel_request(req->req);
-                //}
                 return;
             }
         }
