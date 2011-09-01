@@ -46,10 +46,9 @@ public:
         //! the ip of the host making the request
         //! might use the X-Forwarded-For header
         std::string request_ip(bool use_xff=false) const {
-#if 0
             if (use_xff) {
-                struct evkeyvalq *hdrs = evhttp_request_get_input_headers(req);
-                const char *xff = evhttp_find_header(hdrs, "X-Forwarded-For");
+                std::string xffs = req.header_string("X-Forwarded-For");
+                const char *xff = xffs.c_str();
                 if (xff) {
                     // pick the first addr    
                     int i;
@@ -64,10 +63,11 @@ public:
                     }
                 }
             }
-            if (req->remote_host) {
-                return req->remote_host;
+            address addr;
+            if (sock.getpeername(addr)) {
+                char buf[INET6_ADDRSTRLEN];
+                return addr.ntop(buf, sizeof(buf));
             }
-#endif
             return "";
         }
 
