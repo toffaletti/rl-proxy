@@ -1,5 +1,4 @@
-#include "fw/runner.hh"
-#include "fw/task.hh"
+#include "fw/app.hh"
 #include "fw/buffer.hh"
 #include "fw/http/http_message.hh"
 #include "fw/uri/uri.hh"
@@ -10,15 +9,36 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <fnmatch.h>
 
+#include <boost/date_time/posix_time/posix_time.hpp>
+#include <boost/date_time/gregorian/gregorian.hpp>
+
 using namespace fw;
 
 #define SEC2MS(s) (s*1000)
 
-std::string backend_host = "web619";
-uint16_t backend_port = 6006;
+struct proxy_config : app_config {
+    std::string backend_host;
+    unsigned short backend_port;
+    std::string db;
+    std::string db_host;
+    std::string db_user;
+    std::string credit_server_addr;
+    std::string listen_address;
+    unsigned short listen_port;
+    unsigned int credit_limit;
+    std::string vhost;
+    bool set_host;
+    bool use_xff; // ok to trust X-Forwarded-For header
+    std::string reset_duration_string;
+    boost::posix_time::time_duration reset_duration;
+    bool felix;
+};
 
+// globals
 static http_response resp_503(503, "Gateway Timeout");
+static proxy_config conf;
 
+//! simple http server
 class httpd : boost::noncopyable {
 public:
     struct request {
@@ -167,7 +187,7 @@ void proxy_request(httpd::request &h) {
         // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
 
-        if (cs.dial(backend_host.c_str(), backend_port, SEC2MS(10))) {
+        if (cs.dial(conf.backend_host.c_str(), conf.backend_port, SEC2MS(10))) {
             goto request_connect_error;
         }
 
@@ -239,9 +259,28 @@ response_send_error:
 }
 
 int main(int argc, char *argv[]) {
-    runner::init();
+    application app("rl-proxy", "0.0.1", conf);
+    namespace po = boost::program_options;
+    app.opts.configuration.add_options()
+        ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
+        ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(8080), "listening port")
+        ("db", po::value<std::string>(&conf.db)->default_value(""), "mysql db name")
+        ("db-host", po::value<std::string>(&conf.db_host)->default_value("localhost"), "mysqld host address")
+        ("db-user", po::value<std::string>(&conf.db_user)->default_value("ub"), "mysqld user")
+        ("credit-server", po::value<std::string>(&conf.credit_server_addr)->default_value("localhost"), "credit-server address")
+        ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(10000), "credit limit given to new clients")
+        ("vhost", po::value<std::string>(&conf.vhost)->default_value("localhost"), "virtual host address")
+        ("set-host", po::value<bool>(&conf.set_host)->default_value(false), "modify the Host http header to be the backend host address")
+        ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false), "trust and use the ip from X-Forwarded-For when available")
+        ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"), "duration for credit reset interval in hh:mm:ss format")
+        ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
+    ;
+    app.opts.pdesc.add("backend", -1);
+
+    app.parse_args(argc, argv);
+    parse_host_port(conf.backend_host, conf.backend_port);
     httpd proxy;
     proxy.add_callback("*", proxy_request);
-    proxy.serve("0.0.0.0", 8080);
-    return runner::main();
+    proxy.serve(conf.listen_address, conf.listen_port);
+    return app.run();
 }
