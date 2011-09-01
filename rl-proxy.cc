@@ -1,8 +1,9 @@
+#include <netdb.h>
+
 #include "fw/app.hh"
 #include "fw/buffer.hh"
 #include "fw/http_server.hh"
 #include <boost/lexical_cast.hpp>
-
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
 
@@ -29,7 +30,7 @@ struct proxy_config : app_config {
 // globals
 static http_response resp_503(503, "Gateway Timeout");
 static proxy_config conf;
-
+static std::vector<address> backend_addrs;
 
 void proxy_request(http_server::request &h) {
     LOG(INFO) << h.req.method << " " << h.req.uri;
@@ -38,9 +39,14 @@ void proxy_request(http_server::request &h) {
         // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
 
-        if (cs.dial(conf.backend_host.c_str(), conf.backend_port, SEC2MS(10))) {
-            goto request_connect_error;
+        std::vector<address> addrs = backend_addrs;
+        std::random_shuffle(addrs.begin(), addrs.end());
+        int status = -1;
+        for (std::vector<address>::const_iterator i=addrs.begin(); i!=addrs.end(); ++i) {
+            status = cs.connect(*i, SEC2MS(10));
+            if (status == 0) break;
         }
+        if (status != 0) goto request_connect_error;
 
         http_request r(h.req.method, h.req.uri);
         r.headers = h.req.headers;
@@ -109,6 +115,20 @@ response_send_error:
     return;
 }
 
+static void host2addresses(std::string &host, uint16_t port, std::vector<address> &addrs) {
+    struct addrinfo *results = 0;
+    struct addrinfo *result = 0;
+    int status = getaddrinfo(host.c_str(), NULL, NULL, &results);
+    if (status == 0) {
+        for (result = results; result != NULL; result = result->ai_next) {
+            address addr(result->ai_addr, result->ai_addrlen);
+            addr.port(port);
+            addrs.push_back(addr);
+        }
+    }
+    freeaddrinfo(results);
+}
+
 int main(int argc, char *argv[]) {
     application app("rl-proxy", "0.0.1", conf);
     namespace po = boost::program_options;
@@ -130,6 +150,15 @@ int main(int argc, char *argv[]) {
 
     app.parse_args(argc, argv);
     parse_host_port(conf.backend_host, conf.backend_port);
+
+    host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
+    if (backend_addrs.empty()) {
+        LOG(ERROR) << "Could not resolve backend host: " << conf.backend_host;
+        exit(1);
+    }
+    resp_503.append_header("Connection", "close");
+    resp_503.append_header("Content-Length", "0");
+
     http_server proxy(4*1024*1024, SEC2MS(5)); // 4mb stack size, 5 second timeout
     proxy.add_callback("*", proxy_request);
     proxy.serve(conf.listen_address, conf.listen_port);
