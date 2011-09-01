@@ -50,6 +50,9 @@ void proxy_request(http_server::request &h) {
 
         http_request r(h.req.method, h.req.uri);
         r.headers = h.req.headers;
+        if (!conf.vhost.empty()) {
+            r.set_header("Host", conf.vhost);
+        }
         std::string data = r.data();
         ssize_t nw = cs.send(data.data(), data.size(), SEC2MS(5));
         if (nw <= 0) { goto request_send_error; }
@@ -135,13 +138,12 @@ int main(int argc, char *argv[]) {
     app.opts.configuration.add_options()
         ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
         ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(8080), "listening port")
-        ("db", po::value<std::string>(&conf.db)->default_value(""), "mysql db name")
+        ("db", po::value<std::string>(&conf.db), "mysql db name")
         ("db-host", po::value<std::string>(&conf.db_host)->default_value("localhost"), "mysqld host address")
         ("db-user", po::value<std::string>(&conf.db_user)->default_value("ub"), "mysqld user")
         ("credit-server", po::value<std::string>(&conf.credit_server_addr)->default_value("localhost"), "credit-server address")
         ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(10000), "credit limit given to new clients")
-        ("vhost", po::value<std::string>(&conf.vhost)->default_value("localhost"), "virtual host address")
-        ("set-host", po::value<bool>(&conf.set_host)->default_value(false), "modify the Host http header to be the backend host address")
+        ("vhost", po::value<std::string>(&conf.vhost), "use this virtual host address in Host header to backend")
         ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false), "trust and use the ip from X-Forwarded-For when available")
         ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"), "duration for credit reset interval in hh:mm:ss format")
         ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
@@ -156,6 +158,16 @@ int main(int argc, char *argv[]) {
         LOG(ERROR) << "Could not resolve backend host: " << conf.backend_host;
         exit(1);
     }
+
+    using namespace boost::posix_time;
+    try {
+        conf.reset_duration = duration_from_string(conf.reset_duration_string);
+        LOG(INFO) << "Reset duration: " << conf.reset_duration;
+    } catch (std::exception &e) {
+        LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
+        exit(1);
+    }
+
     resp_503.append_header("Connection", "close");
     resp_503.append_header("Content-Length", "0");
 
