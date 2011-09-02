@@ -20,11 +20,9 @@ struct proxy_config : app_config {
     unsigned short listen_port;
     unsigned int credit_limit;
     std::string vhost;
-    bool set_host;
     bool use_xff; // ok to trust X-Forwarded-For header
     std::string reset_duration_string;
     boost::posix_time::time_duration reset_duration;
-    bool felix;
 };
 
 // globals
@@ -171,8 +169,9 @@ int main(int argc, char *argv[]) {
     resp_503.append_header("Connection", "close");
     resp_503.append_header("Content-Length", "0");
 
-    http_server proxy(4*1024*1024, SEC2MS(5)); // 4mb stack size, 5 second timeout
+    http_server proxy(DEFAULT_STACK_SIZE, SEC2MS(5)); // 4mb stack size, 5 second timeout
     proxy.add_callback("*", proxy_request);
     proxy.serve(conf.listen_address, conf.listen_port);
     return app.run();
 }
+
