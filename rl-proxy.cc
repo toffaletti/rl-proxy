@@ -3,6 +3,7 @@
 #include "fw/app.hh"
 #include "fw/buffer.hh"
 #include "fw/http_server.hh"
+#include "fw/json.hh"
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
@@ -30,9 +31,87 @@ static http_response resp_503(503, "Gateway Timeout");
 static proxy_config conf;
 static std::vector<address> backend_addrs;
 
-void proxy_request(http_server::request &h) {
-    LOG(INFO) << h.req.method << " " << h.req.uri;
+static void add_rate_limit_headers(http_response &r, uint64_t credits_remaining) {
+    //r.set_header("X-RateLimit-Limit", credit_limit(request));
+    r.set_header("X-RateLimit-Remaining", credits_remaining);
+    //r.set_header("X-RateLimit-Reset", reset_time_t);
+}
 
+static std::string get_request_apikey(http_server::request &h) {
+    uri u = h.get_uri();
+    uri::query_params params = u.parse_query();
+    uri::query_params::iterator param_it = uri::find_param(params, "apikey");
+    std::string apikey;
+
+    // check http query params for api key
+    if (param_it != params.end()) {
+      // found apikey query param
+      apikey = param_it->second;
+    }
+
+    // also check the http headers for an api key
+    if (apikey.empty()) {
+        h.req.header_string("X-RateLimit-Key");
+    }
+
+    return apikey;
+}
+
+static void log_request(http_server::request &h) {
+    boost::posix_time::ptime stop(boost::posix_time::microsec_clock::universal_time());
+    boost::posix_time::time_duration elapsed = (stop - h.start);
+    LOG(INFO) << h.agent_ip() << " " <<
+        h.req.method << " " <<
+        h.req.uri << " " <<
+        h.resp.status_code << " " <<
+        h.resp.header_ull("Content-Length") << " " <<
+        elapsed.total_milliseconds() << " " <<
+        get_request_apikey(h);
+}
+
+void credit_request(http_server::request &h) {
+    uint64_t value = 0;
+    VLOG(3) << "got credit value: " << value;
+    unsigned int limit = 0;
+    json_ptr j = json_ptr(json_object(), json_deleter());
+    json_t *request_j = json_object();
+    json_object_set_new(request_j, "parameters", json_object());
+    json_object_set_new(request_j, "response_type", json_string("json"));
+    json_object_set_new(request_j, "resource", json_string("credit"));
+    // TODO: make this use the host: header to construct the url
+    uri u = h.get_uri(conf.vhost);
+    json_object_set_new(request_j, "url", json_string(u.compose().c_str()));
+    json_object_set_new(j.get(), "request", request_j);
+    json_t *response_j = json_object();
+
+    // this will recalculate the times if needed
+    //calculate_reset_time();
+
+    h.resp = http_response(200, "OK");
+    //json_object_set_new(response_j, "reset", json_integer(reset_time_t));
+    json_object_set_new(response_j, "limit", json_integer(limit));
+    if (value <= limit) {
+      json_object_set_new(response_j, "remaining", json_integer(limit - value));
+      add_rate_limit_headers(h.resp, limit-value);
+    } else {
+      json_object_set_new(response_j, "remaining", json_integer(0));
+      add_rate_limit_headers(h.resp, 0);
+    }
+    //json_object_set_new(response_j, "refresh_in_secs", json_integer(till_reset.total_seconds()));
+    json_object_set_new(j.get(), "response", response_j);
+
+    boost::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free_deleter());
+    std::string js(js_.get());
+    js += "\n";
+    h.resp.set_header("Content-Type", "application/json");
+    h.resp.set_header("Content-Length", js.size());
+
+    h.send_response();
+
+    h.sock.send(js.data(), js.size(), SEC2MS(5));
+}
+
+void proxy_request(http_server::request &h) {
     try {
         // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
@@ -60,34 +139,35 @@ void proxy_request(http_server::request &h) {
         }
 
         http_parser parser;
-        http_response resp(&r);
-        resp.parser_init(&parser);
+        h.resp = http_response(&r);
+        h.resp.parser_init(&parser);
         bool headers_sent = false;
         char buf[4096];
         for (;;) {
             ssize_t nr = cs.recv(buf, sizeof(buf), SEC2MS(5));
             if (nr < 0) { goto response_read_error; }
-            bool complete = resp.parse(&parser, buf, nr);
-            if (headers_sent == false && resp.status_code) {
+            bool complete = h.resp.parse(&parser, buf, nr);
+            if (headers_sent == false && h.resp.status_code) {
                 headers_sent = true;
-                nw = h.send_response(resp);
+                add_rate_limit_headers(h.resp, 0);
+                nw = h.send_response();
                 if (nw <= 0) { goto response_send_error; }
             }
 
-            if (resp.body.size()) {
-                if (resp.header_string("Transfer-Encoding") == "chunked") {
+            if (h.resp.body.size()) {
+                if (h.resp.header_string("Transfer-Encoding") == "chunked") {
                     char lenbuf[64];
-                    int len = snprintf(lenbuf, sizeof(lenbuf)-1, "%zx\r\n", resp.body.size());
-                    resp.body.insert(0, lenbuf, len);
-                    resp.body.append("\r\n");
+                    int len = snprintf(lenbuf, sizeof(lenbuf)-1, "%zx\r\n", h.resp.body.size());
+                    h.resp.body.insert(0, lenbuf, len);
+                    h.resp.body.append("\r\n");
                 }
-                nw = h.sock.send(resp.body.data(), resp.body.size());
+                nw = h.sock.send(h.resp.body.data(), h.resp.body.size());
                 if (nw <= 0) { goto response_send_error; }
-                resp.body.clear();
+                h.resp.body.clear();
             }
             if (complete) {
                 // send end chunk
-                if (resp.header_string("Transfer-Encoding") == "chunked") {
+                if (h.resp.header_string("Transfer-Encoding") == "chunked") {
                     nw = h.sock.send("0\r\n\r\n", 5);
                 }
                 break;
@@ -101,15 +181,18 @@ void proxy_request(http_server::request &h) {
     }
 request_connect_error:
     PLOG(ERROR) << "request connect error " << h.req.method << " " << h.req.uri;
-    h.send_response(resp_503);
+    h.resp = resp_503;
+    h.send_response();
     return;
 request_send_error:
     PLOG(ERROR) << "request send error: " << h.req.method << " " << h.req.uri;
-    h.send_response(resp_503);
+    h.resp = resp_503;
+    h.send_response();
     return;
 response_read_error:
     PLOG(ERROR) << "response read error: " << h.req.method << " " << h.req.uri;
-    h.send_response(resp_503);
+    h.resp = resp_503;
+    h.send_response();
     return;
 response_send_error:
     PLOG(ERROR) << "response send error: " << h.req.method << " " << h.req.uri;
@@ -151,6 +234,12 @@ int main(int argc, char *argv[]) {
     app.parse_args(argc, argv);
     parse_host_port(conf.backend_host, conf.backend_port);
 
+    if (conf.backend_host.empty()) {
+        std::cerr << "Error: backend host address required\n\n";
+        app.showhelp();
+        exit(1);
+    }
+
     host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
     if (backend_addrs.empty()) {
         LOG(ERROR) << "Could not resolve backend host: " << conf.backend_host;
@@ -170,6 +259,8 @@ int main(int argc, char *argv[]) {
     resp_503.append_header("Content-Length", "0");
 
     http_server proxy(DEFAULT_STACK_SIZE, SEC2MS(5)); // 4mb stack size, 5 second timeout
+    proxy.set_log_callback(log_request);
+    proxy.add_callback("/credit.json", credit_request);
     proxy.add_callback("*", proxy_request);
     proxy.serve(conf.listen_address, conf.listen_port);
     return app.run();
