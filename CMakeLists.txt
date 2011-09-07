@@ -5,7 +5,7 @@ add_subdirectory(fw)
 include(${CMAKE_CURRENT_SOURCE_DIR}/fw/cmake/fw.cmake)
 
 add_executable(rl-proxy rl-proxy.cc)
-target_link_libraries(rl-proxy fw http uri boost_program_options jansson)
+target_link_libraries(rl-proxy fw http uri boost_program_options jansson crypto)
 
 add_executable(rl-keygen rl-keygen.cc)
 target_link_libraries(rl-keygen fw boost_program_options crypto)

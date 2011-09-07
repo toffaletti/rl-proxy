@@ -1,15 +1,11 @@
-#include <openssl/engine.h>
-#include <openssl/hmac.h>
-#include <openssl/sha.h>
-#include <openssl/evp.h>
-
 #include <iostream>
 #include <boost/program_options.hpp>
 #include <boost/program_options/parsers.hpp>
 
-#include "fw/descriptors.hh"
-#include "fw/logging.hh"
-#include "fw/encoders.hh"
+#include <boost/date_time/posix_time/posix_time.hpp>
+#include <boost/date_time/gregorian/gregorian.hpp>
+
+#include "keygen.hh"
 
 namespace po = boost::program_options;
 
@@ -67,24 +63,58 @@ static void parse_args(options &opts, int argc, char *argv[]) {
     }
 }
 
+time_t to_time_t(const boost::posix_time::ptime &t) {
+  using namespace boost::posix_time;
+  struct tm tt = to_tm(t);
+  return mktime(&tt);
+}
+
+static boost::posix_time::ptime expire_string_to_time(const std::string &expire) {
+    if (expire.size() < 2) {
+        throw fw::errorx("invalid expire time: %s", expire.c_str());
+    }
+    unsigned int count = boost::lexical_cast<unsigned int>(expire.substr(0, expire.size()-1));
+    char scale = expire[expire.size()-1];
+
+    using namespace boost::gregorian;
+    using namespace boost::posix_time;
+
+    ptime now(second_clock::local_time());
+    ptime expire_time(now.date());
+
+    switch (scale) {
+        case 'd':
+            expire_time += days(count);
+            break;
+        case 'm':
+            expire_time += months(count);
+            break;
+        case 'y':
+            expire_time += years(count);
+            break;
+        default:
+            throw fw::errorx("invalid expire time: %s", expire.c_str());
+            break;
+    }
+
+    return expire_time;
+}
+
 struct config {
     std::string secret;
+    std::string expire;
+    uint64_t org_id;
 };
 
 static config conf;
-
-int verify_key(const char *secret, size_t slen, unsigned char *key_data) {
-    unsigned char md[20];
-    unsigned int mdlen = sizeof(md);
-    HMAC(EVP_sha1(), secret, slen, key_data, 10, md, &mdlen);
-    return memcmp(md, &key_data[10], 10) == 0;
-}
 
 int main(int argc, char *argv[]) {
     options opts;
 
     opts.configuration.add_options()
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
+        ("expire", po::value<std::string>(&conf.expire)->default_value("1y"), "expire time (1d, 1m, 1y)")
+        ("org_id", po::value<uint64_t>(&conf.org_id)->default_value(0), "organization id the key is issued to")
     ;
 
     parse_args(opts, argc, argv);
@@ -95,39 +125,26 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    ENGINE_load_builtin_engines();
-    ENGINE_register_all_complete();
+    if (conf.org_id == 0) {
+        std::cerr << "Error: org_id is required\n\n";
+        showhelp(opts);
+        exit(1);
+    }
 
-    fw::file_fd urnd("/dev/urandom", 0, O_RDONLY);
-    unsigned char rand_data[32];
-    ssize_t nr = urnd.read(rand_data, sizeof(rand_data));
-    if (nr != sizeof(rand_data)) abort();
-
-    unsigned char key_data[20];
-
-    SHA1(rand_data, sizeof(rand_data), key_data);
-
-    unsigned char md[20];
-    unsigned int mdlen = sizeof(md);
-
-    // only use the first 10 bytes of key data
-    HMAC(EVP_sha1(), conf.secret.data(), conf.secret.size(),
-        key_data, 10, md, &mdlen);
-
-    if (mdlen != sizeof(md)) abort();
-
-    memcpy(&key_data[10], md, 10);
-
-    if (verify_key(conf.secret.data(), conf.secret.size(), key_data)) {
-        char b32key[33];
-        b32key[32] = 0;
-        stlencoders::base32<char>::encode_upper(&key_data[0], &key_data[20], b32key);
-        std::cout << b32key << "\n";
-        memset(key_data, 0, sizeof(key_data));
-        stlencoders::base32<char>::decode(&b32key[0], &b32key[32], key_data);
-        if (verify_key(conf.secret.data(), conf.secret.size(), key_data)) {
-            std::cout << "verified\n";
+    try {
+        uint64_t expire_time = 0;
+        if (!conf.expire.empty()) {
+            boost::posix_time::ptime expire_ptime = expire_string_to_time(conf.expire);
+            std::cerr << "Expires: " << expire_ptime << "\n";
+            expire_time = to_time_t(expire_ptime);
         }
+
+        key_engine eng(conf.secret);
+        std::string key = eng.generate(conf.org_id, expire_time);
+        std::cout << key << "\n";
+        assert(eng.verify(key));
+    } catch (std::exception &e) {
+        std::cerr << "Error: " << e.what() << "\n";
     }
     return 0;
 }

@@ -8,6 +8,8 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
 
+#include "keygen.hh"
+
 using namespace fw;
 
 struct proxy_config : app_config {
@@ -23,6 +25,7 @@ struct proxy_config : app_config {
     std::string vhost;
     bool use_xff; // ok to trust X-Forwarded-For header
     std::string reset_duration_string;
+    std::string secret;
     boost::posix_time::time_duration reset_duration;
 };
 
@@ -30,6 +33,7 @@ struct proxy_config : app_config {
 static http_response resp_503(503, "Gateway Timeout");
 static proxy_config conf;
 static std::vector<address> backend_addrs;
+static key_engine keng("");
 
 static void add_rate_limit_headers(http_response &r, uint64_t credits_remaining) {
     //r.set_header("X-RateLimit-Limit", credit_limit(request));
@@ -115,6 +119,11 @@ void proxy_request(http_server::request &h) {
     try {
         // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
+
+        std::string apikey = get_request_apikey(h);
+        if (!keng.verify(apikey)) {
+            LOG(WARNING) << "invalid apikey: " << apikey << "\n";
+        }
 
         std::vector<address> addrs = backend_addrs;
         std::random_shuffle(addrs.begin(), addrs.end());
@@ -228,6 +237,7 @@ int main(int argc, char *argv[]) {
         ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false), "trust and use the ip from X-Forwarded-For when available")
         ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"), "duration for credit reset interval in hh:mm:ss format")
         ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
+        ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
     ;
     app.opts.pdesc.add("backend", -1);
 
@@ -239,6 +249,13 @@ int main(int argc, char *argv[]) {
         app.showhelp();
         exit(1);
     }
+
+    if (conf.secret.empty()) {
+        std::cerr << "Error: secret key is required\n\n";
+        app.showhelp();
+        exit(1);
+    }
+    keng.secret = conf.secret;
 
     host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
     if (backend_addrs.empty()) {
@@ -258,7 +275,7 @@ int main(int argc, char *argv[]) {
     resp_503.append_header("Connection", "close");
     resp_503.append_header("Content-Length", "0");
 
-    http_server proxy(DEFAULT_STACK_SIZE, SEC2MS(5)); // 4mb stack size, 5 second timeout
+    http_server proxy(128*1024, SEC2MS(5));
     proxy.set_log_callback(log_request);
     proxy.add_callback("/credit.json", credit_request);
     proxy.add_callback("*", proxy_request);
