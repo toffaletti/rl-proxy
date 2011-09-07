@@ -125,7 +125,7 @@ void proxy_request(http_server::request &h) {
         if (!keng.verify(b32key, key)) {
             LOG(WARNING) << "invalid apikey: " << b32key << "\n";
         } else {
-            LOG(INFO) << "key expires: " << key.expires << "\n";
+            LOG(INFO) << "key data: " << key.data << "\n";
         }
 
         std::vector<address> addrs = backend_addrs;
@@ -137,11 +137,30 @@ void proxy_request(http_server::request &h) {
         }
         if (status != 0) goto request_connect_error;
 
-        http_request r(h.req.method, h.req.uri);
+        uri u = h.get_uri();
+        // clean up query params
+        // so the request is more cachable
+        uri::query_params params = u.parse_query();
+        uri::remove_param(params, "apikey");
+        // touching the body
+        uri::remove_param(params, "callback");
+        // jQuery adds _ to prevent caching of JSONP
+        uri::remove_param(params, "_");
+        u.query = uri::params_to_query(params);
+        // always request .json, never .js
+        // reduce the number of cached paths
+        std::string dot_js(".js");
+        if (boost::ends_with(u.path, dot_js)) {
+            u.path += "on"; // make .js .json
+        }
+        http_request r(h.req.method, u.compose(true));
         r.headers = h.req.headers;
+        // clean up headers that hurt caching
+        r.remove_header("X-Ratelimit-Key");
         if (!conf.vhost.empty()) {
             r.set_header("Host", conf.vhost);
         }
+
         std::string data = r.data();
         ssize_t nw = cs.send(data.data(), data.size(), SEC2MS(5));
         if (nw <= 0) { goto request_send_error; }
@@ -155,6 +174,7 @@ void proxy_request(http_server::request &h) {
         h.resp.parser_init(&parser);
         bool headers_sent = false;
         char buf[4096];
+        // TODO: need to buffer the entire response to re-add the JSONP wrapper
         for (;;) {
             ssize_t nr = cs.recv(buf, sizeof(buf), SEC2MS(5));
             if (nr < 0) { goto response_read_error; }

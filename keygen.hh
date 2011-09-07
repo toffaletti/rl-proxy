@@ -7,25 +7,34 @@
 
 struct expire_date_t {
     uint16_t year;
-    uint8_t month;
-    uint8_t day;
+    uint8_t month:5;
+    uint8_t day:3;
 } __attribute__((packed));
+
+static expire_date_t no_expire = {0, 0, 0};
 
 std::ostream &operator <<(std::ostream &o, const expire_date_t &d) {
     o << d.year << "/" << (int)d.month << "/" << (int)d.day;
     return o;
 }
 
-static expire_date_t no_expire = {0, 0, 0};
+struct meta_t {
+    uint64_t org_id:48;
+    uint64_t app_id:16;
+    expire_date_t expires;
+    uint32_t flags:8;
+    uint32_t credits:24;
+} __attribute__((packed));
+
+std::ostream &operator <<(std::ostream &o, const meta_t &m) {
+    o << "{org_id:" << m.org_id << ",app_id:" << m.app_id << ",expires:" << m.expires;
+    o << ",flags:" << m.flags << ",credits:" << m.credits << "}";
+    return o;
+}
 
 struct apikey {
-    uint8_t digest[11];
-    uint64_t org_id;
-    expire_date_t expires;
-    uint16_t flags;
-
-    uint8_t *data() { return (uint8_t *)&org_id; }
-    size_t data_size() { return 14; }
+    uint8_t digest[10];
+    meta_t data;
 } __attribute__((packed));
 
 struct key_engine {
@@ -39,17 +48,25 @@ struct key_engine {
         ENGINE_register_all_complete();
     }
 
-    std::string generate(uint64_t org_id, expire_date_t expires = no_expire , uint8_t flags = 0) {
+    std::string generate(uint64_t org_id,
+        uint16_t app_id,
+        uint32_t credits = 0,
+        expire_date_t expires = no_expire , uint8_t flags = 0)
+    {
         apikey key;
-        key.org_id = org_id;
-        key.expires = expires;
-        key.flags = flags;
+        memset(&key, 0, sizeof(key));
+        key.data.org_id = org_id;
+        if (key.data.org_id != org_id) { throw std::runtime_error("org_id overflow"); }
+        key.data.app_id = app_id;
+        key.data.expires = expires;
+        key.data.flags = flags;
+        key.data.credits = credits;
 
         unsigned char md[20];
         unsigned int mdlen = sizeof(md);
 
         HMAC(EVP_sha1(), secret.data(), secret.size(),
-            key.data(), key.data_size(), md, &mdlen);
+            (uint8_t *)&key.data, sizeof(key.data), md, &mdlen);
 
         if (mdlen != sizeof(md)) abort();
 
@@ -65,7 +82,7 @@ struct key_engine {
             stlencoders::base32<char>::decode(b32key.begin(), b32key.end(), (uint8_t *)&key);
             unsigned char md[20];
             unsigned int mdlen = sizeof(md);
-            HMAC(EVP_sha1(), secret.data(), secret.size(), key.data(), key.data_size(), md, &mdlen);
+            HMAC(EVP_sha1(), secret.data(), secret.size(), (uint8_t *)&key.data, sizeof(key.data), md, &mdlen);
             return memcmp(md, key.digest, sizeof(key.digest)) == 0;
         } catch (...) {
             return false;

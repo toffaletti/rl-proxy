@@ -104,6 +104,8 @@ struct config {
     std::string secret;
     std::string expire;
     uint64_t org_id;
+    uint16_t app_id;
+    uint32_t credits;
 };
 
 static config conf;
@@ -115,6 +117,8 @@ int main(int argc, char *argv[]) {
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
         ("expire", po::value<std::string>(&conf.expire)->default_value("1y"), "expire time (1d, 1m, 1y)")
         ("org_id", po::value<uint64_t>(&conf.org_id)->default_value(0), "organization id the key is issued to")
+        ("app_id", po::value<uint16_t>(&conf.app_id)->default_value(0), "app id within org the key is issued to")
+        ("credits", po::value<uint32_t>(&conf.credits)->default_value(0), "credits given to the key for the reset duration")
     ;
 
     parse_args(opts, argc, argv);
@@ -142,7 +146,7 @@ int main(int argc, char *argv[]) {
         }
 
         key_engine eng(conf.secret);
-        std::string key = eng.generate(conf.org_id, expires);
+        std::string key = eng.generate(conf.org_id, conf.app_id, conf.credits, expires);
         std::cout << key << "\n";
         apikey akey;
         assert(eng.verify(key, akey));
