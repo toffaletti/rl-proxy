@@ -120,9 +120,12 @@ void proxy_request(http_server::request &h) {
         // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
 
-        std::string apikey = get_request_apikey(h);
-        if (!keng.verify(apikey)) {
-            LOG(WARNING) << "invalid apikey: " << apikey << "\n";
+        std::string b32key = get_request_apikey(h);
+        apikey key;
+        if (!keng.verify(b32key, key)) {
+            LOG(WARNING) << "invalid apikey: " << b32key << "\n";
+        } else {
+            LOG(INFO) << "key expires: " << key.expires << "\n";
         }
 
         std::vector<address> addrs = backend_addrs;

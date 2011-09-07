@@ -5,16 +5,28 @@
 #include "fw/descriptors.hh"
 #include "fw/encoders.hh"
 
-struct apikey {
-    uint8_t digest[13];
-    uint64_t org_id;
-    uint64_t expire_timestamp;
-    uint8_t flags;
-
-    uint8_t *data() { return (uint8_t *)&org_id; }
-    size_t data_size() { return 17; }
+struct expire_date_t {
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
 } __attribute__((packed));
 
+std::ostream &operator <<(std::ostream &o, const expire_date_t &d) {
+    o << d.year << "/" << (int)d.month << "/" << (int)d.day;
+    return o;
+}
+
+static expire_date_t no_expire = {0, 0, 0};
+
+struct apikey {
+    uint8_t digest[11];
+    uint64_t org_id;
+    expire_date_t expires;
+    uint16_t flags;
+
+    uint8_t *data() { return (uint8_t *)&org_id; }
+    size_t data_size() { return 14; }
+} __attribute__((packed));
 
 struct key_engine {
     std::string secret;
@@ -27,10 +39,10 @@ struct key_engine {
         ENGINE_register_all_complete();
     }
 
-    std::string generate(uint64_t org_id, uint64_t expires = 0, uint8_t flags = 0) {
+    std::string generate(uint64_t org_id, expire_date_t expires = no_expire , uint8_t flags = 0) {
         apikey key;
         key.org_id = org_id;
-        key.expire_timestamp = expires;
+        key.expires = expires;
         key.flags = flags;
 
         unsigned char md[20];
@@ -48,9 +60,8 @@ struct key_engine {
         return std::string(b32key, b32keylen);
     }
 
-    bool verify(const std::string &b32key) {
+    bool verify(const std::string &b32key, apikey &key) {
         try {
-            apikey key;
             stlencoders::base32<char>::decode(b32key.begin(), b32key.end(), (uint8_t *)&key);
             unsigned char md[20];
             unsigned int mdlen = sizeof(md);

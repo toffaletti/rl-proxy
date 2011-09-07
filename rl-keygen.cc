@@ -132,17 +132,20 @@ int main(int argc, char *argv[]) {
     }
 
     try {
-        uint64_t expire_time = 0;
+        expire_date_t expires = no_expire;
         if (!conf.expire.empty()) {
             boost::posix_time::ptime expire_ptime = expire_string_to_time(conf.expire);
             std::cerr << "Expires: " << expire_ptime << "\n";
-            expire_time = to_time_t(expire_ptime);
+            expires.year = expire_ptime.date().year();
+            expires.month = expire_ptime.date().month();
+            expires.day = expire_ptime.date().day();
         }
 
         key_engine eng(conf.secret);
-        std::string key = eng.generate(conf.org_id, expire_time);
+        std::string key = eng.generate(conf.org_id, expires);
         std::cout << key << "\n";
-        assert(eng.verify(key));
+        apikey akey;
+        assert(eng.verify(key, akey));
     } catch (std::exception &e) {
         std::cerr << "Error: " << e.what() << "\n";
     }
