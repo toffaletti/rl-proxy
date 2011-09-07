@@ -172,40 +172,40 @@ void proxy_request(http_server::request &h) {
         http_parser parser;
         h.resp = http_response(&r);
         h.resp.parser_init(&parser);
-        bool headers_sent = false;
         char buf[4096];
         // TODO: need to buffer the entire response to re-add the JSONP wrapper
         for (;;) {
             ssize_t nr = cs.recv(buf, sizeof(buf), SEC2MS(5));
             if (nr < 0) { goto response_read_error; }
-            bool complete = h.resp.parse(&parser, buf, nr);
-            if (headers_sent == false && h.resp.status_code) {
-                headers_sent = true;
-                add_rate_limit_headers(h.resp, 0);
-                nw = h.send_response();
-                if (nw <= 0) { goto response_send_error; }
-            }
-
-            if (h.resp.body.size()) {
-                if (h.resp.header_string("Transfer-Encoding") == "chunked") {
-                    char lenbuf[64];
-                    int len = snprintf(lenbuf, sizeof(lenbuf)-1, "%zx\r\n", h.resp.body.size());
-                    h.resp.body.insert(0, lenbuf, len);
-                    h.resp.body.append("\r\n");
-                }
-                nw = h.sock.send(h.resp.body.data(), h.resp.body.size());
-                if (nw <= 0) { goto response_send_error; }
-                h.resp.body.clear();
-            }
-            if (complete) {
-                // send end chunk
-                if (h.resp.header_string("Transfer-Encoding") == "chunked") {
-                    nw = h.sock.send("0\r\n\r\n", 5);
-                }
-                break;
-            }
+            if (h.resp.parse(&parser, buf, nr)) break;
             if (nr == 0) { goto response_read_error; }
+
         }
+        add_rate_limit_headers(h.resp, 0);
+        params = h.get_uri().parse_query();
+        uri::query_params::iterator i = uri::find_param(params, "callback");
+        if (i != params.end()) {
+            std::string content_type = h.resp.header_string("Content-Type");
+            if (content_type.find("json") != std::string::npos) {
+                // wrap response in JSONP
+                std::stringstream ss;
+                ss << i->second << "(" << h.resp.body << ");\n";
+                h.resp.body = ss.str();
+            } else {
+                // TODO: would be nice to get some error message text in here
+                std::stringstream ss;
+                ss << i->second << "({\"error\":" << h.resp.status_code << "});\n";
+                h.resp.body = ss.str();
+            }
+            // must return valid javascript or websites that include this JSONP call will break
+            h.resp.status_code = 200;
+            h.resp.set_header("Content-Type", "application/javascript; charset=utf-8");
+            h.resp.set_header("Content-Length", h.resp.body.size());
+        }
+        nw = h.send_response();
+        if (nw <= 0) { goto response_send_error; }
+        nw = h.sock.send(h.resp.body.data(), h.resp.body.size());
+        if (nw <= 0) { goto response_send_error; }
         return;
     } catch (std::exception &e) {
         LOG(ERROR) << "exception error: " << h.req.uri << " : " << e.what();
