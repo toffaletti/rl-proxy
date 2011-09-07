@@ -139,7 +139,6 @@ int main(int argc, char *argv[]) {
         expire_date_t expires = no_expire;
         if (!conf.expire.empty()) {
             boost::posix_time::ptime expire_ptime = expire_string_to_time(conf.expire);
-            std::cerr << "Expires: " << expire_ptime << "\n";
             expires.year = expire_ptime.date().year();
             expires.month = expire_ptime.date().month();
             expires.day = expire_ptime.date().day();
@@ -147,9 +146,13 @@ int main(int argc, char *argv[]) {
 
         key_engine eng(conf.secret);
         std::string key = eng.generate(conf.org_id, conf.app_id, conf.credits, expires);
-        std::cout << key << "\n";
         apikey akey;
-        assert(eng.verify(key, akey));
+        if (eng.verify(key, akey)) {
+            std::cout << key << "\n";
+            std::cerr << akey.data << "\n";
+        } else {
+            exit(1);
+        }
     } catch (std::exception &e) {
         std::cerr << "Error: " << e.what() << "\n";
     }
