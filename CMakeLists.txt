@@ -9,3 +9,6 @@ target_link_libraries(rl-proxy fw http uri boost_program_options jansson crypto)
 
 add_executable(rl-keygen rl-keygen.cc)
 target_link_libraries(rl-keygen fw boost_program_options crypto)
+
+add_executable(credit-client credit-client.cc)
+target_link_libraries(credit-client fw boost_program_options)

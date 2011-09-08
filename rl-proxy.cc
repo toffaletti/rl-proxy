@@ -255,7 +255,7 @@ int main(int argc, char *argv[]) {
         ("db-host", po::value<std::string>(&conf.db_host)->default_value("localhost"), "mysqld host address")
         ("db-user", po::value<std::string>(&conf.db_user)->default_value("ub"), "mysqld user")
         ("credit-server", po::value<std::string>(&conf.credit_server_addr)->default_value("localhost"), "credit-server address")
-        ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(10000), "credit limit given to new clients")
+        ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(3600), "credit limit given to new clients")
         ("vhost", po::value<std::string>(&conf.vhost), "use this virtual host address in Host header to backend")
         ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false), "trust and use the ip from X-Forwarded-For when available")
         ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"), "duration for credit reset interval in hh:mm:ss format")
