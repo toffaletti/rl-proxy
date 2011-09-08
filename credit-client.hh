@@ -61,8 +61,11 @@ public:
         if (nw == sizeof(pkt)) {
             tasks[pkt.xid] = t;
             // TODO: implement tryrecv so timeout works
-            pkt = t.ch.recv();
-            VLOG(3) << "channel recv pkt xid: " << pkt.xid << " value: " << pkt.value;
+            if (t.ch.timed_recv(pkt, 100)) {
+                VLOG(3) << "channel recv pkt xid: " << pkt.xid << " value: " << pkt.value;
+            } else {
+                VLOG(3) << "timeout for pkt xid: " << pkt.xid;
+            }
         } else {
             abort();
         }

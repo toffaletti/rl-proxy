@@ -11,7 +11,9 @@ static void f(credit_client &cc) {
     cc.send_packet(pkt);
     pkt.value = 1;
     cc.send_packet(pkt);
+    VLOG(3) << "closing";
     cc.close();
+    VLOG(3) << "done";
 }
 
 int main(int argc, char *argv[]) {
