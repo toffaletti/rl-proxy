@@ -10,8 +10,18 @@ using namespace fw;
 
 struct packet {
     uint64_t xid;
-    uint8_t  key[16];
+    char db[8];
+    uint64_t key;
     uint64_t value;
+
+    std::string db_name() { return std::string(db, strnlen(db, sizeof(db))); }
+    void set_db(const std::string &db_) {
+        if (db_.size() > sizeof(db)) { throw errorx("db name %s too long", db_.c_str()); }
+        memcpy(db, db_.data(), db_.size());
+        if (db_.size() < sizeof(db)) {
+            db[db_.size()] = 0;
+        }
+    }
 } __attribute__((packed));
 
 class credit_client : boost::noncopyable {
@@ -54,21 +64,21 @@ public:
         _recv_task = task::spawn(boost::bind(&credit_client::recv_task, this));
     }
 
-    void send_packet(packet &pkt) {
+    bool query(const std::string &db, uint64_t key, uint64_t &val) {
+        packet pkt;
         pkt.xid = xid++;
+        pkt.set_db(db);
+        pkt.key = key;
+        pkt.value = val;
         nettask t;
         ssize_t nw = sock.sendto(&pkt, sizeof(pkt), saddr);
         if (nw == sizeof(pkt)) {
             tasks[pkt.xid] = t;
-            // TODO: implement tryrecv so timeout works
-            if (t.ch.timed_recv(pkt, 100)) {
-                VLOG(3) << "channel recv pkt xid: " << pkt.xid << " value: " << pkt.value;
-            } else {
-                VLOG(3) << "timeout for pkt xid: " << pkt.xid;
-            }
-        } else {
-            abort();
+            bool success = t.ch.timed_recv(pkt, 100);
+            if (success) { val = pkt.value; }
+            return success;
         }
+        return false;
     }
 
     void close() {

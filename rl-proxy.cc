@@ -265,10 +265,11 @@ int main(int argc, char *argv[]) {
     app.opts.pdesc.add("backend", -1);
 
     app.parse_args(argc, argv);
+    conf.backend_port = 0;
     parse_host_port(conf.backend_host, conf.backend_port);
 
-    if (conf.backend_host.empty()) {
-        std::cerr << "Error: backend host address required\n\n";
+    if (conf.backend_host.empty() || conf.backend_port == 0) {
+        std::cerr << "Error: backend host:port address required\n\n";
         app.showhelp();
         exit(1);
     }

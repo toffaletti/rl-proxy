@@ -12,3 +12,6 @@ target_link_libraries(rl-keygen fw boost_program_options crypto)
 
 add_executable(credit-client credit-client.cc)
 target_link_libraries(credit-client fw boost_program_options)
+
+add_executable(credit-server credit-server.cc)
+target_link_libraries(credit-server fw boost_program_options)
