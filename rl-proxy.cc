@@ -9,6 +9,7 @@
 #include <boost/date_time/gregorian/gregorian.hpp>
 
 #include "keygen.hh"
+#include "credit-client.hh"
 
 using namespace fw;
 
@@ -18,7 +19,8 @@ struct proxy_config : app_config {
     std::string db;
     std::string db_host;
     std::string db_user;
-    std::string credit_server_addr;
+    std::string credit_server_host;
+    uint16_t credit_server_port;
     std::string listen_address;
     unsigned short listen_port;
     unsigned int credit_limit;
@@ -73,10 +75,33 @@ static void log_request(http_server::request &h) {
         get_request_apikey(h);
 }
 
-void credit_request(http_server::request &h) {
-    uint64_t value = 0;
-    VLOG(3) << "got credit value: " << value;
-    unsigned int limit = 0;
+static void credit_check(http_server::request &h, credit_client &cc, uint64_t &limit, uint64_t &value) {
+    limit = conf.credit_limit;
+    uint64_t ckey = 0;
+    std::string db = "ip";
+    std::string b32key = get_request_apikey(h);
+    inet_pton(AF_INET, h.agent_ip(conf.use_xff).c_str(), &ckey);
+    if (!b32key.empty()) {
+        apikey key;
+        if (!keng.verify(b32key, key)) {
+            LOG(WARNING) << "invalid apikey: " << b32key << "\n";
+        } else {
+            LOG(INFO) << "key data: " << key.data << "\n";
+            db = "org";
+            ckey = key.data.org_id;
+            if (key.data.credits) {
+                limit = key.data.credits;
+            }
+        }
+    }
+    cc.query(db, ckey, value);
+}
+
+void credit_request(http_server::request &h, credit_client &cc) {
+    uint64_t limit = 0;
+    uint64_t value = 0; // value of 0 will just return how many credits are used
+    credit_check(h, cc, limit, value);
+
     json_ptr j = json_ptr(json_object(), json_deleter());
     json_t *request_j = json_object();
     json_object_set_new(request_j, "parameters", json_object());
@@ -115,18 +140,14 @@ void credit_request(http_server::request &h) {
     h.sock.send(js.data(), js.size(), SEC2MS(5));
 }
 
-void proxy_request(http_server::request &h) {
+void proxy_request(http_server::request &h, credit_client &cc) {
     try {
         // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
 
-        std::string b32key = get_request_apikey(h);
-        apikey key;
-        if (!keng.verify(b32key, key)) {
-            LOG(WARNING) << "invalid apikey: " << b32key << "\n";
-        } else {
-            LOG(INFO) << "key data: " << key.data << "\n";
-        }
+        uint64_t limit = 0;
+        uint64_t value = 1;
+        credit_check(h, cc, limit, value);
 
         std::vector<address> addrs = backend_addrs;
         std::random_shuffle(addrs.begin(), addrs.end());
@@ -254,7 +275,7 @@ int main(int argc, char *argv[]) {
         ("db", po::value<std::string>(&conf.db), "mysql db name")
         ("db-host", po::value<std::string>(&conf.db_host)->default_value("localhost"), "mysqld host address")
         ("db-user", po::value<std::string>(&conf.db_user)->default_value("ub"), "mysqld user")
-        ("credit-server", po::value<std::string>(&conf.credit_server_addr)->default_value("localhost"), "credit-server address")
+        ("credit-server", po::value<std::string>(&conf.credit_server_host)->default_value("localhost"), "credit-server host:port")
         ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(3600), "credit limit given to new clients")
         ("vhost", po::value<std::string>(&conf.vhost), "use this virtual host address in Host header to backend")
         ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false), "trust and use the ip from X-Forwarded-For when available")
@@ -299,10 +320,15 @@ int main(int argc, char *argv[]) {
     resp_503.append_header("Connection", "close");
     resp_503.append_header("Content-Length", "0");
 
+    conf.credit_server_port = 9876;
+    parse_host_port(conf.credit_server_host, conf.credit_server_port);
+
+    credit_client cc(conf.credit_server_host, conf.credit_server_port);
+
     http_server proxy(128*1024, SEC2MS(5));
     proxy.set_log_callback(log_request);
-    proxy.add_callback("/credit.json", credit_request);
-    proxy.add_callback("*", proxy_request);
+    proxy.add_callback("/credit.json", boost::bind(credit_request, _1, boost::ref(cc)));
+    proxy.add_callback("*", boost::bind(proxy_request, _1, boost::ref(cc)));
     proxy.serve(conf.listen_address, conf.listen_port);
     return app.run();
 }

@@ -64,7 +64,7 @@ public:
         _recv_task = task::spawn(boost::bind(&credit_client::recv_task, this));
     }
 
-    bool query(const std::string &db, uint64_t key, uint64_t &val) {
+    bool query(const std::string &db, uint64_t key, uint64_t &val, unsigned int timeout_ms=100) {
         packet pkt;
         pkt.xid = xid++;
         pkt.set_db(db);
@@ -74,7 +74,7 @@ public:
         ssize_t nw = sock.sendto(&pkt, sizeof(pkt), saddr);
         if (nw == sizeof(pkt)) {
             tasks[pkt.xid] = t;
-            bool success = t.ch.timed_recv(pkt, 100);
+            bool success = t.ch.timed_recv(pkt, timeout_ms);
             if (success) { val = pkt.value; }
             return success;
         }
