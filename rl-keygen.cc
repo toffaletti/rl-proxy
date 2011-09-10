@@ -2,7 +2,6 @@
 #include <boost/program_options.hpp>
 #include <boost/program_options/parsers.hpp>
 
-#include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
 
 #include "keygen.hh"
@@ -61,12 +60,6 @@ static void parse_args(options &opts, int argc, char *argv[]) {
         showhelp(opts);
         exit(1);
     }
-}
-
-time_t to_time_t(const boost::posix_time::ptime &t) {
-  using namespace boost::posix_time;
-  struct tm tt = to_tm(t);
-  return mktime(&tt);
 }
 
 static boost::posix_time::ptime expire_string_to_time(const std::string &expire) {

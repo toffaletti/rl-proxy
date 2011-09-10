@@ -1,9 +1,19 @@
+#ifndef KEYGEN_HH
+#define KEYGEN_HH
+
 #include <openssl/engine.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include "fw/descriptors.hh"
 #include "fw/encoders.hh"
+#include <boost/date_time/posix_time/posix_time.hpp>
+
+time_t to_time_t(const boost::posix_time::ptime &t) {
+    using namespace boost::posix_time;
+    struct tm tt = to_tm(t);
+    return mktime(&tt);
+}
 
 struct expire_date_t {
     uint16_t year;
@@ -89,3 +99,5 @@ struct key_engine {
         }
     }
 };
+
+#endif // KEYGEN_HH

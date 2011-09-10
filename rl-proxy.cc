@@ -32,15 +32,45 @@ struct proxy_config : app_config {
 };
 
 // globals
-static http_response resp_503(503, "Gateway Timeout");
+static http_response resp_503(503, "Gateway Timeout", "HTTP/1.1",
+    2,
+    "Connection", "close",
+    "Content-Length", "0"
+);
+static http_response resp_invalid_apikey(400, "Invalid Key", "HTTP/1.1",
+    2,
+    "Connection", "close",
+    "Content-Length", "0"
+);
+
 static proxy_config conf;
 static std::vector<address> backend_addrs;
 static key_engine keng("");
+static boost::posix_time::ptime reset_time;
 
-static void add_rate_limit_headers(http_response &r, uint64_t credits_remaining) {
-    //r.set_header("X-RateLimit-Limit", credit_limit(request));
-    r.set_header("X-RateLimit-Remaining", credits_remaining);
-    //r.set_header("X-RateLimit-Reset", reset_time_t);
+static void calculate_reset_time(
+    const boost::posix_time::time_duration &reset_duration,
+    boost::posix_time::ptime &reset_time,
+    boost::posix_time::time_duration &till_reset)
+{
+    using namespace boost::gregorian;
+    using namespace boost::posix_time;
+
+    ptime now(second_clock::local_time());
+    if (reset_time.is_not_a_date_time() || reset_time <= now) {
+      ptime reset_start_time(now.date());
+      time_iterator tit(reset_start_time, conf.reset_duration);
+      while (tit <= now) { ++tit; } // find the next reset time
+      // set the class members to be used by other functions
+      reset_time = *tit;
+    }
+    till_reset = reset_time - now;
+}
+
+static void add_rate_limit_headers(http_response &r, uint64_t limit, uint64_t remaining) {
+    r.set_header("X-RateLimit-Limit", limit);
+    r.set_header("X-RateLimit-Remaining", remaining);
+    r.set_header("X-RateLimit-Reset", to_time_t(reset_time));
 }
 
 static std::string get_request_apikey(http_server::request &h) {
@@ -75,32 +105,45 @@ static void log_request(http_server::request &h) {
         get_request_apikey(h);
 }
 
-static void credit_check(http_server::request &h, credit_client &cc, uint64_t &limit, uint64_t &value) {
-    limit = conf.credit_limit;
+static bool credit_check(http_server::request &h, credit_client &cc, apikey &key, uint64_t &value) {
     uint64_t ckey = 0;
     std::string db = "ip";
     std::string b32key = get_request_apikey(h);
     inet_pton(AF_INET, h.agent_ip(conf.use_xff).c_str(), &ckey);
-    if (!b32key.empty()) {
-        apikey key;
+    bool valid = true;
+    if (b32key.empty()) {
+        // use default credit limit for ips
+        key.data.credits = conf.credit_limit;
+    } else {
         if (!keng.verify(b32key, key)) {
+            // report invalid key to caller
+            // so we can send an error code back to the client
+            // but not before deducting a credit from their ip
+            valid = false;
             LOG(WARNING) << "invalid apikey: " << b32key << "\n";
         } else {
             LOG(INFO) << "key data: " << key.data << "\n";
             db = "org";
             ckey = key.data.org_id;
-            if (key.data.credits) {
-                limit = key.data.credits;
+            if (key.data.credits == 0) {
+                // use default credit limit for keys with no embedded limit
+                // TODO: lookup the limit in a database?
+                key.data.credits = conf.credit_limit;
             }
         }
     }
     cc.query(db, ckey, value);
+    return valid;
 }
 
 void credit_request(http_server::request &h, credit_client &cc) {
-    uint64_t limit = 0;
     uint64_t value = 0; // value of 0 will just return how many credits are used
-    credit_check(h, cc, limit, value);
+    apikey key;
+    if (!credit_check(h, cc, key, value)) {
+        h.resp = resp_invalid_apikey;
+        h.send_response();
+        return;
+    }
 
     json_ptr j = json_ptr(json_object(), json_deleter());
     json_t *request_j = json_object();
@@ -114,19 +157,15 @@ void credit_request(http_server::request &h, credit_client &cc) {
     json_t *response_j = json_object();
 
     // this will recalculate the times if needed
-    //calculate_reset_time();
+    boost::posix_time::time_duration till_reset;
+    calculate_reset_time(conf.reset_duration, reset_time, till_reset);
 
     h.resp = http_response(200, "OK");
-    //json_object_set_new(response_j, "reset", json_integer(reset_time_t));
-    json_object_set_new(response_j, "limit", json_integer(limit));
-    if (value <= limit) {
-      json_object_set_new(response_j, "remaining", json_integer(limit - value));
-      add_rate_limit_headers(h.resp, limit-value);
-    } else {
-      json_object_set_new(response_j, "remaining", json_integer(0));
-      add_rate_limit_headers(h.resp, 0);
-    }
-    //json_object_set_new(response_j, "refresh_in_secs", json_integer(till_reset.total_seconds()));
+    json_object_set_new(response_j, "reset", json_integer(to_time_t(reset_time)));
+    json_object_set_new(response_j, "limit", json_integer(key.data.credits));
+    json_object_set_new(response_j, "remaining", json_integer(std::max((int64_t)0, (int64_t)(key.data.credits - value))));
+    add_rate_limit_headers(h.resp, key.data.credits, std::max((int64_t)0, (int64_t)(key.data.credits - value)));
+    json_object_set_new(response_j, "refresh_in_secs", json_integer(till_reset.total_seconds()));
     json_object_set_new(j.get(), "response", response_j);
 
     boost::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free_deleter());
@@ -145,9 +184,11 @@ void proxy_request(http_server::request &h, credit_client &cc) {
         // TODO: use persistent connection pool to backend
         task::socket cs(AF_INET, SOCK_STREAM);
 
-        uint64_t limit = 0;
+        apikey key;
         uint64_t value = 1;
-        credit_check(h, cc, limit, value);
+        if (!credit_check(h, cc, key, value)) {
+            goto invalid_apikey_error;
+        }
 
         std::vector<address> addrs = backend_addrs;
         std::random_shuffle(addrs.begin(), addrs.end());
@@ -202,7 +243,9 @@ void proxy_request(http_server::request &h, credit_client &cc) {
             if (nr == 0) { goto response_read_error; }
 
         }
-        add_rate_limit_headers(h.resp, 0);
+        boost::posix_time::time_duration till_reset;
+        calculate_reset_time(conf.reset_duration, reset_time, till_reset);
+        add_rate_limit_headers(h.resp, key.data.credits, std::max((int64_t)0, (int64_t)(key.data.credits - value)));
         params = h.get_uri().parse_query();
         uri::query_params::iterator i = uri::find_param(params, "callback");
         if (i != params.end()) {
@@ -221,8 +264,9 @@ void proxy_request(http_server::request &h, credit_client &cc) {
             // must return valid javascript or websites that include this JSONP call will break
             h.resp.status_code = 200;
             h.resp.set_header("Content-Type", "application/javascript; charset=utf-8");
-            h.resp.set_header("Content-Length", h.resp.body.size());
         }
+        // HTTP/1.1 requires content-length
+        h.resp.set_header("Content-Length", h.resp.body.size());
         nw = h.send_response();
         if (nw <= 0) { goto response_send_error; }
         nw = h.sock.send(h.resp.body.data(), h.resp.body.size());
@@ -232,6 +276,11 @@ void proxy_request(http_server::request &h, credit_client &cc) {
         LOG(ERROR) << "exception error: " << h.req.uri << " : " << e.what();
         return;
     }
+invalid_apikey_error:
+    PLOG(ERROR) << "invalid apikey error " << h.req.method << " " << h.req.uri;
+    h.resp = resp_invalid_apikey;
+    h.send_response();
+    return;
 request_connect_error:
     PLOG(ERROR) << "request connect error " << h.req.method << " " << h.req.uri;
     h.resp = resp_503;
@@ -316,9 +365,6 @@ int main(int argc, char *argv[]) {
         LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
         exit(1);
     }
-
-    resp_503.append_header("Connection", "close");
-    resp_503.append_header("Content-Length", "0");
 
     conf.credit_server_port = 9876;
     parse_host_port(conf.credit_server_host, conf.credit_server_port);
