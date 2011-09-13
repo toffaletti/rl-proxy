@@ -65,7 +65,6 @@ static void calculate_reset_time(
       ptime reset_start_time(now.date());
       time_iterator tit(reset_start_time, conf.reset_duration);
       while (tit <= now) { ++tit; } // find the next reset time
-      // set the class members to be used by other functions
       reset_time = *tit;
     }
     till_reset = reset_time - now;
@@ -133,7 +132,7 @@ static bool credit_check(http_server::request &h,
             ckey = key.data.org_id;
             if (key.data.credits == 0) {
                 // use default credit limit for keys with no embedded limit
-                // TODO: lookup the limit in a database?
+                // XXX: lookup the limit in an external database
                 key.data.credits = conf.credit_limit;
             }
         }
