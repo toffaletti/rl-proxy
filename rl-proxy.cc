@@ -42,7 +42,11 @@ static http_response resp_invalid_apikey(400, "Invalid Key", "HTTP/1.1",
     "Connection", "close",
     "Content-Length", "0"
 );
-
+static http_response resp_out_of_credits(503, "Credit Limit Reached", "HTTP/1.1",
+    2,
+    "Connection", "close",
+    "Content-Length", "0"
+);
 static proxy_config conf;
 static std::vector<address> backend_addrs;
 static key_engine keng("");
@@ -105,7 +109,9 @@ static void log_request(http_server::request &h) {
         get_request_apikey(h);
 }
 
-static bool credit_check(http_server::request &h, credit_client &cc, apikey &key, uint64_t &value) {
+static bool credit_check(http_server::request &h,
+    credit_client &cc, apikey &key, uint64_t &value)
+{
     uint64_t ckey = 0;
     std::string db = "ip";
     std::string b32key = get_request_apikey(h);
@@ -150,7 +156,6 @@ void credit_request(http_server::request &h, credit_client &cc) {
     json_object_set_new(request_j, "parameters", json_object());
     json_object_set_new(request_j, "response_type", json_string("json"));
     json_object_set_new(request_j, "resource", json_string("credit"));
-    // TODO: make this use the host: header to construct the url
     uri u = h.get_uri(conf.vhost);
     json_object_set_new(request_j, "url", json_string(u.compose().c_str()));
     json_object_set_new(j.get(), "request", request_j);
@@ -163,9 +168,12 @@ void credit_request(http_server::request &h, credit_client &cc) {
     h.resp = http_response(200, "OK");
     json_object_set_new(response_j, "reset", json_integer(to_time_t(reset_time)));
     json_object_set_new(response_j, "limit", json_integer(key.data.credits));
-    json_object_set_new(response_j, "remaining", json_integer(std::max((int64_t)0, (int64_t)(key.data.credits - value))));
-    add_rate_limit_headers(h.resp, key.data.credits, std::max((int64_t)0, (int64_t)(key.data.credits - value)));
-    json_object_set_new(response_j, "refresh_in_secs", json_integer(till_reset.total_seconds()));
+    json_object_set_new(response_j, "remaining",
+        json_integer(std::max((int64_t)0, (int64_t)(key.data.credits - value))));
+    add_rate_limit_headers(h.resp, key.data.credits,
+        std::max((int64_t)0, (int64_t)(key.data.credits - value)));
+    json_object_set_new(response_j, "refresh_in_secs",
+        json_integer(till_reset.total_seconds()));
     json_object_set_new(j.get(), "response", response_j);
 
     boost::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free_deleter());
@@ -188,6 +196,10 @@ void proxy_request(http_server::request &h, credit_client &cc) {
         uint64_t value = 1;
         if (!credit_check(h, cc, key, value)) {
             goto invalid_apikey_error;
+        }
+
+        if (std::max((int64_t)0, (int64_t)(key.data.credits - value)) == 0) {
+            goto out_of_credits_error;
         }
 
         std::vector<address> addrs = backend_addrs;
@@ -235,7 +247,6 @@ void proxy_request(http_server::request &h, credit_client &cc) {
         h.resp = http_response(&r);
         h.resp.parser_init(&parser);
         char buf[4096];
-        // TODO: need to buffer the entire response to re-add the JSONP wrapper
         for (;;) {
             ssize_t nr = cs.recv(buf, sizeof(buf), SEC2MS(5));
             if (nr < 0) { goto response_read_error; }
@@ -245,7 +256,8 @@ void proxy_request(http_server::request &h, credit_client &cc) {
         }
         boost::posix_time::time_duration till_reset;
         calculate_reset_time(conf.reset_duration, reset_time, till_reset);
-        add_rate_limit_headers(h.resp, key.data.credits, std::max((int64_t)0, (int64_t)(key.data.credits - value)));
+        add_rate_limit_headers(h.resp, key.data.credits,
+            std::max((int64_t)0, (int64_t)(key.data.credits - value)));
         params = h.get_uri().parse_query();
         uri::query_params::iterator i = uri::find_param(params, "callback");
         if (i != params.end()) {
@@ -276,6 +288,10 @@ void proxy_request(http_server::request &h, credit_client &cc) {
         LOG(ERROR) << "exception error: " << h.req.uri << " : " << e.what();
         return;
     }
+out_of_credits_error:
+    h.resp = resp_out_of_credits;
+    h.send_response();
+    return;
 invalid_apikey_error:
     PLOG(ERROR) << "invalid apikey error " << h.req.method << " " << h.req.uri;
     h.resp = resp_invalid_apikey;
