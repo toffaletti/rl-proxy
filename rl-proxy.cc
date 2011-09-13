@@ -10,6 +10,7 @@
 
 #include "keygen.hh"
 #include "credit-client.hh"
+#include "shared_pool.hh"
 
 using namespace fw;
 
@@ -31,6 +32,53 @@ struct proxy_config : app_config {
     boost::posix_time::time_duration reset_duration;
 };
 
+static void host2addresses(std::string &host, uint16_t port, std::vector<address> &addrs) {
+    struct addrinfo *results = 0;
+    struct addrinfo *result = 0;
+    int status = getaddrinfo(host.c_str(), NULL, NULL, &results);
+    if (status == 0) {
+        for (result = results; result != NULL; result = result->ai_next) {
+            address addr(result->ai_addr, result->ai_addrlen);
+            addr.port(port);
+            addrs.push_back(addr);
+        }
+    }
+    freeaddrinfo(results);
+}
+
+struct backend_connect_error : std::exception {};
+struct request_send_error : std::exception {};
+struct response_read_error : std::exception {};
+
+class backend_pool : public shared_pool<task::socket> {
+public:
+    backend_pool(proxy_config &conf) : shared_pool<task::socket>("backend")
+    {
+        host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
+        if (backend_addrs.empty()) {
+            throw errorx("could not resolve backend host: %s", conf.backend_host.c_str());
+        }
+    }
+
+private:
+    std::vector<address> backend_addrs;
+
+    task::socket *new_resource() {
+        std::auto_ptr<task::socket> cs(new task::socket(AF_INET, SOCK_STREAM));
+        std::vector<address> addrs = backend_addrs;
+        std::random_shuffle(addrs.begin(), addrs.end());
+        int status = -1;
+        for (std::vector<address>::const_iterator i=addrs.begin(); i!=addrs.end(); ++i) {
+            status = cs->connect(*i, SEC2MS(10));
+            if (status == 0) break;
+        }
+        if (status != 0) throw backend_connect_error();
+        return cs.release();
+    }
+};
+
+
+
 // globals
 static http_response resp_503(503, "Gateway Timeout", "HTTP/1.1",
     2,
@@ -48,7 +96,6 @@ static http_response resp_out_of_credits(503, "Credit Limit Reached", "HTTP/1.1"
     "Content-Length", "0"
 );
 static proxy_config conf;
-static std::vector<address> backend_addrs;
 static key_engine keng("");
 static boost::posix_time::ptime reset_time;
 
@@ -187,11 +234,8 @@ void credit_request(http_server::request &h, credit_client &cc) {
     h.sock.send(js.data(), js.size(), SEC2MS(5));
 }
 
-void proxy_request(http_server::request &h, credit_client &cc) {
+void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp) {
     try {
-        // TODO: use persistent connection pool to backend
-        task::socket cs(AF_INET, SOCK_STREAM);
-
         apikey key;
         uint64_t value = 1;
         if (!credit_check(h, cc, key, value)) {
@@ -202,87 +246,95 @@ void proxy_request(http_server::request &h, credit_client &cc) {
             goto out_of_credits_error;
         }
 
-        std::vector<address> addrs = backend_addrs;
-        std::random_shuffle(addrs.begin(), addrs.end());
-        int status = -1;
-        for (std::vector<address>::const_iterator i=addrs.begin(); i!=addrs.end(); ++i) {
-            status = cs.connect(*i, SEC2MS(10));
-            if (status == 0) break;
-        }
-        if (status != 0) goto request_connect_error;
+        backend_pool::scoped_resource cs(bp);
+backend_retry:
+        try {
 
-        uri u = h.get_uri();
-        // clean up query params
-        // so the request is more cachable
-        uri::query_params params = u.parse_query();
-        uri::remove_param(params, "apikey");
-        // touching the body
-        uri::remove_param(params, "callback");
-        // jQuery adds _ to prevent caching of JSONP
-        uri::remove_param(params, "_");
-        u.query = uri::params_to_query(params);
-        // always request .json, never .js
-        // reduce the number of cached paths
-        std::string dot_js(".js");
-        if (boost::ends_with(u.path, dot_js)) {
-            u.path += "on"; // make .js .json
-        }
-        http_request r(h.req.method, u.compose(true));
-        r.headers = h.req.headers;
-        // clean up headers that hurt caching
-        r.remove_header("X-Ratelimit-Key");
-        if (!conf.vhost.empty()) {
-            r.set_header("Host", conf.vhost);
-        }
-
-        std::string data = r.data();
-        ssize_t nw = cs.send(data.data(), data.size(), SEC2MS(5));
-        if (nw <= 0) { goto request_send_error; }
-        if (!h.req.body.empty()) {
-            nw = cs.send(h.req.body.data(), h.req.body.size(), SEC2MS(5));
-            if (nw <= 0) { goto request_send_error; }
-        }
-
-        http_parser parser;
-        h.resp = http_response(&r);
-        h.resp.parser_init(&parser);
-        char buf[4096];
-        for (;;) {
-            ssize_t nr = cs.recv(buf, sizeof(buf), SEC2MS(5));
-            if (nr < 0) { goto response_read_error; }
-            if (h.resp.parse(&parser, buf, nr)) break;
-            if (nr == 0) { goto response_read_error; }
-
-        }
-        boost::posix_time::time_duration till_reset;
-        calculate_reset_time(conf.reset_duration, reset_time, till_reset);
-        add_rate_limit_headers(h.resp, key.data.credits,
-            std::max((int64_t)0, (int64_t)(key.data.credits - value)));
-        params = h.get_uri().parse_query();
-        uri::query_params::iterator i = uri::find_param(params, "callback");
-        if (i != params.end()) {
-            std::string content_type = h.resp.header_string("Content-Type");
-            if (content_type.find("json") != std::string::npos) {
-                // wrap response in JSONP
-                std::stringstream ss;
-                ss << i->second << "(" << h.resp.body << ");\n";
-                h.resp.body = ss.str();
-            } else {
-                // TODO: would be nice to get some error message text in here
-                std::stringstream ss;
-                ss << i->second << "({\"error\":" << h.resp.status_code << "});\n";
-                h.resp.body = ss.str();
+            uri u = h.get_uri();
+            // clean up query params
+            // so the request is more cachable
+            uri::query_params params = u.parse_query();
+            uri::remove_param(params, "apikey");
+            // touching the body
+            uri::remove_param(params, "callback");
+            // jQuery adds _ to prevent caching of JSONP
+            uri::remove_param(params, "_");
+            u.query = uri::params_to_query(params);
+            // always request .json, never .js
+            // reduce the number of cached paths
+            std::string dot_js(".js");
+            if (boost::ends_with(u.path, dot_js)) {
+                u.path += "on"; // make .js .json
             }
-            // must return valid javascript or websites that include this JSONP call will break
-            h.resp.status_code = 200;
-            h.resp.set_header("Content-Type", "application/javascript; charset=utf-8");
+            http_request r(h.req.method, u.compose(true));
+            r.headers = h.req.headers;
+            // clean up headers that hurt caching
+            r.remove_header("X-Ratelimit-Key");
+            if (!conf.vhost.empty()) {
+                r.set_header("Host", conf.vhost);
+            }
+
+            std::string data = r.data();
+            ssize_t nw = cs->send(data.data(), data.size(), SEC2MS(5));
+            if (nw <= 0) { throw request_send_error(); }
+            if (!h.req.body.empty()) {
+                nw = cs->send(h.req.body.data(), h.req.body.size(), SEC2MS(5));
+                if (nw <= 0) { throw request_send_error(); }
+            }
+
+            http_parser parser;
+            h.resp = http_response(&r);
+            h.resp.parser_init(&parser);
+            char buf[4096];
+            for (;;) {
+                ssize_t nr = cs->recv(buf, sizeof(buf), SEC2MS(5));
+                if (nr < 0) { throw response_read_error(); }
+                if (h.resp.parse(&parser, buf, nr)) break;
+                if (nr == 0) { throw response_read_error(); }
+            }
+            boost::posix_time::time_duration till_reset;
+            calculate_reset_time(conf.reset_duration, reset_time, till_reset);
+            add_rate_limit_headers(h.resp, key.data.credits,
+                std::max((int64_t)0, (int64_t)(key.data.credits - value)));
+            params = h.get_uri().parse_query();
+            uri::query_params::iterator i = uri::find_param(params, "callback");
+            if (i != params.end()) {
+                std::string content_type = h.resp.header_string("Content-Type");
+                if (content_type.find("json") != std::string::npos) {
+                    // wrap response in JSONP
+                    std::stringstream ss;
+                    ss << i->second << "(" << h.resp.body << ");\n";
+                    h.resp.body = ss.str();
+                } else {
+                    // TODO: would be nice to get some error message text in here
+                    std::stringstream ss;
+                    ss << i->second << "({\"error\":" << h.resp.status_code << "});\n";
+                    h.resp.body = ss.str();
+                }
+                // must return valid javascript or websites that include this JSONP call will break
+                h.resp.status_code = 200;
+                h.resp.set_header("Content-Type", "application/javascript; charset=utf-8");
+            }
+            // HTTP/1.1 requires content-length
+            h.resp.set_header("Content-Length", h.resp.body.size());
+            nw = h.send_response();
+            if (nw <= 0) { goto response_send_error; }
+            nw = h.sock.send(h.resp.body.data(), h.resp.body.size());
+            if (nw <= 0) { goto response_send_error; }
+            return;
+        } catch (request_send_error &e) {
+            PLOG(ERROR) << "request send error: " << h.req.method << " " << h.req.uri;
+            cs.exchange();
+            goto backend_retry;
+        } catch (response_read_error &e) {
+            PLOG(ERROR) << "response read error: " << h.req.method << " " << h.req.uri;
+            cs.exchange();
+            goto backend_retry;
         }
-        // HTTP/1.1 requires content-length
-        h.resp.set_header("Content-Length", h.resp.body.size());
-        nw = h.send_response();
-        if (nw <= 0) { goto response_send_error; }
-        nw = h.sock.send(h.resp.body.data(), h.resp.body.size());
-        if (nw <= 0) { goto response_send_error; }
+    } catch (backend_connect_error &e) {
+        PLOG(ERROR) << "request connect error " << h.req.method << " " << h.req.uri;
+        h.resp = resp_503;
+        h.send_response();
         return;
     } catch (std::exception &e) {
         LOG(ERROR) << "exception error: " << h.req.uri << " : " << e.what();
@@ -297,38 +349,9 @@ invalid_apikey_error:
     h.resp = resp_invalid_apikey;
     h.send_response();
     return;
-request_connect_error:
-    PLOG(ERROR) << "request connect error " << h.req.method << " " << h.req.uri;
-    h.resp = resp_503;
-    h.send_response();
-    return;
-request_send_error:
-    PLOG(ERROR) << "request send error: " << h.req.method << " " << h.req.uri;
-    h.resp = resp_503;
-    h.send_response();
-    return;
-response_read_error:
-    PLOG(ERROR) << "response read error: " << h.req.method << " " << h.req.uri;
-    h.resp = resp_503;
-    h.send_response();
-    return;
 response_send_error:
     PLOG(ERROR) << "response send error: " << h.req.method << " " << h.req.uri;
     return;
-}
-
-static void host2addresses(std::string &host, uint16_t port, std::vector<address> &addrs) {
-    struct addrinfo *results = 0;
-    struct addrinfo *result = 0;
-    int status = getaddrinfo(host.c_str(), NULL, NULL, &results);
-    if (status == 0) {
-        for (result = results; result != NULL; result = result->ai_next) {
-            address addr(result->ai_addr, result->ai_addrlen);
-            addr.port(port);
-            addrs.push_back(addr);
-        }
-    }
-    freeaddrinfo(results);
 }
 
 int main(int argc, char *argv[]) {
@@ -357,21 +380,15 @@ int main(int argc, char *argv[]) {
     if (conf.backend_host.empty() || conf.backend_port == 0) {
         std::cerr << "Error: backend host:port address required\n\n";
         app.showhelp();
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     if (conf.secret.empty()) {
         std::cerr << "Error: secret key is required\n\n";
         app.showhelp();
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     keng.secret = conf.secret;
-
-    host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
-    if (backend_addrs.empty()) {
-        LOG(ERROR) << "Could not resolve backend host: " << conf.backend_host;
-        exit(1);
-    }
 
     using namespace boost::posix_time;
     try {
@@ -379,19 +396,25 @@ int main(int argc, char *argv[]) {
         LOG(INFO) << "Reset duration: " << conf.reset_duration;
     } catch (std::exception &e) {
         LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
-    conf.credit_server_port = 9876;
-    parse_host_port(conf.credit_server_host, conf.credit_server_port);
+    try {
+        backend_pool bp(conf);
+        conf.credit_server_port = 9876;
+        parse_host_port(conf.credit_server_host, conf.credit_server_port);
 
-    credit_client cc(conf.credit_server_host, conf.credit_server_port);
+        credit_client cc(conf.credit_server_host, conf.credit_server_port);
 
-    http_server proxy(128*1024, SEC2MS(5));
-    proxy.set_log_callback(log_request);
-    proxy.add_callback("/credit.json", boost::bind(credit_request, _1, boost::ref(cc)));
-    proxy.add_callback("*", boost::bind(proxy_request, _1, boost::ref(cc)));
-    proxy.serve(conf.listen_address, conf.listen_port);
-    return app.run();
+        http_server proxy(128*1024, SEC2MS(5));
+        proxy.set_log_callback(log_request);
+        proxy.add_callback("/credit.json", boost::bind(credit_request, _1, boost::ref(cc)));
+        proxy.add_callback("*", boost::bind(proxy_request, _1, boost::ref(cc), boost::ref(bp)));
+        proxy.serve(conf.listen_address, conf.listen_port);
+        return app.run();
+    } catch (std::exception &e) {
+        LOG(ERROR) << e.what();
+    }
+    return EXIT_FAILURE;
 }
 
