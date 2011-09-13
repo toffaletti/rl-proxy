@@ -125,6 +125,7 @@ static bool credit_check(http_server::request &h,
             // so we can send an error code back to the client
             // but not before deducting a credit from their ip
             valid = false;
+            if (value == 0) value = 1; // force deducting for invalid keys
             LOG(WARNING) << "invalid apikey: " << b32key << "\n";
         } else {
             LOG(INFO) << "key data: " << key.data << "\n";
