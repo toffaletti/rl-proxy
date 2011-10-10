@@ -4,6 +4,7 @@
 #include <boost/date_time/gregorian/gregorian.hpp>
 
 using namespace fw;
+size_t default_stacksize=8*1024;
 
 struct credit_server_config : app_config {
     std::string listen_address;
@@ -28,8 +29,8 @@ public:
         sock.bind(baddr);
         sock.getsockname(baddr);
         LOG(INFO) << "listening on: " << baddr;
-        task::spawn(boost::bind(&credit_server::reset_task, this));
-        task::spawn(boost::bind(&credit_server::listen_task, this));
+        taskspawn(std::bind(&credit_server::reset_task, this));
+        taskspawn(std::bind(&credit_server::listen_task, this));
     }
 
 private:
@@ -53,7 +54,7 @@ private:
         for (;;) {
             boost::posix_time::time_duration ttr = till_reset(conf.reset_duration);
             VLOG(3) << "sleeping for " << ttr.total_seconds() << " seconds";
-            task::sleep(ttr.total_milliseconds());
+            tasksleep(ttr.total_milliseconds());
             VLOG(3) << "reseting credits";
             dbs.clear();
         }
@@ -62,7 +63,7 @@ private:
     void listen_task() {
         address faddr;
         packet pkt;
-        while (task::poll(sock.fd, EPOLLIN)) {
+        while (fdwait(sock.fd, 'r')) {
             ssize_t nr = sock.recvfrom(&pkt, sizeof(pkt), faddr);
             if (nr < (ssize_t)sizeof(pkt)) break;
             VLOG(3) << "got packet xid: " << pkt.xid << " from: " << faddr;
@@ -70,7 +71,7 @@ private:
             if (pkt.value == 0) {
                 pkt.value = db[pkt.key];
             } else {
-                std::pair<kv_map_t::iterator, bool> i = db.insert(std::make_pair(pkt.key, pkt.value));
+                std::pair<kv_map_t::iterator, bool> i = db.insert(std::make_pair((uint64_t)pkt.key, (uint64_t)pkt.value));
                 if (!i.second) {
                     // avoid overflow
                     if (pkt.value > (UINT64_MAX - i.first->second)) {

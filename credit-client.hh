@@ -61,7 +61,7 @@ public:
         address baddr;
         baddr.family(saddr.family());
         sock.bind(baddr);
-        _recv_task = task::spawn(boost::bind(&credit_client::recv_task, this));
+        _recv_tid = taskspawn(std::bind(&credit_client::recv_task, this));
     }
 
     bool query(const std::string &db, uint64_t key, uint64_t &val, unsigned int timeout_ms=100) {
@@ -82,19 +82,19 @@ public:
     }
 
     void close() {
-        _recv_task.cancel();
+        taskcancel(_recv_tid);
     }
 private:
     socket_fd sock;
     address saddr;
     uint64_t xid;
     task_map tasks;
-    task _recv_task;
+    uint64_t _recv_tid;
 
     void recv_task() {
         address faddr;
         packet pkt;
-        while (task::poll(sock.fd, EPOLLIN)) {
+        while (fdwait(sock.fd, 'r')) {
             ssize_t nr = sock.recvfrom(&pkt, sizeof(pkt), faddr);
             if (nr < (ssize_t)sizeof(pkt)) break;
             VLOG(3) << "got packet xid: " << pkt.xid;

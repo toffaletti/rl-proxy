@@ -1,4 +1,3 @@
-#include "fw/runner.hh"
 #include "credit-client.hh"
 
 #include <iostream>
@@ -6,6 +5,7 @@
 #include <boost/program_options/parsers.hpp>
 
 using namespace fw;
+size_t default_stacksize=8*1024;
 
 namespace po = boost::program_options;
 
@@ -84,7 +84,7 @@ void f(credit_client &cc) {
 }
 
 int main(int argc, char *argv[]) {
-
+    procmain p;
     options opts;
 
     opts.configuration.add_options()
@@ -99,8 +99,7 @@ int main(int argc, char *argv[]) {
     conf.server_port = 9876;
     parse_host_port(conf.server_host, conf.server_port);
 
-    runner::init();
     credit_client cc(conf.server_host, conf.server_port);
-    task::spawn(boost::bind(f, boost::ref(cc)));
-    return runner::main();
+    taskspawn(std::bind(f, std::ref(cc)));
+    return p.main(argc, argv);
 }

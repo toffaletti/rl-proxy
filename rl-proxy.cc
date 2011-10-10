@@ -1,4 +1,5 @@
 #include <netdb.h>
+#include <memory>
 
 #include "fw/app.hh"
 #include "fw/buffer.hh"
@@ -13,6 +14,7 @@
 #include "shared_pool.hh"
 
 using namespace fw;
+size_t default_stacksize=8*1024;
 
 struct proxy_config : app_config {
     std::string backend_host;
@@ -50,9 +52,9 @@ struct backend_connect_error : std::exception {};
 struct request_send_error : std::exception {};
 struct response_read_error : std::exception {};
 
-class backend_pool : public shared_pool<task::socket> {
+class backend_pool : public shared_pool<netsock> {
 public:
-    backend_pool(proxy_config &conf) : shared_pool<task::socket>("backend")
+    backend_pool(proxy_config &conf) : shared_pool<netsock>("backend")
     {
         host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
         if (backend_addrs.empty()) {
@@ -63,8 +65,8 @@ public:
 private:
     std::vector<address> backend_addrs;
 
-    task::socket *new_resource() {
-        std::auto_ptr<task::socket> cs(new task::socket(AF_INET, SOCK_STREAM));
+    netsock *new_resource() {
+        std::unique_ptr<netsock> cs(new netsock(AF_INET, SOCK_STREAM));
         std::vector<address> addrs = backend_addrs;
         std::random_shuffle(addrs.begin(), addrs.end());
         int status = -1;
@@ -226,6 +228,7 @@ void credit_request(http_server::request &h, credit_client &cc) {
     boost::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free_deleter());
     std::string js(js_.get());
     js += "\n";
+    h.resp = http_response(200, "OK");
     h.resp.set_header("Content-Type", "application/json");
     h.resp.set_header("Content-Length", js.size());
 
