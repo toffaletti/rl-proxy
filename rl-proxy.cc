@@ -358,7 +358,7 @@ response_send_error:
 }
 
 int main(int argc, char *argv[]) {
-    application app("rl-proxy", "0.0.1", conf);
+    application app("0.0.1", conf);
     namespace po = boost::program_options;
     app.opts.configuration.add_options()
         ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
