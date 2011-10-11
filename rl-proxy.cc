@@ -225,7 +225,7 @@ void credit_request(http_server::request &h, credit_client &cc) {
         json_integer(till_reset.total_seconds()));
     json_object_set_new(j.get(), "response", response_j);
 
-    boost::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free_deleter());
+    std::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free_deleter());
     std::string js(js_.get());
     js += "\n";
     h.resp = http_response(200, "OK");
@@ -402,6 +402,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    using namespace std::placeholders;
     try {
         backend_pool bp(conf);
         conf.credit_server_port = 9876;
@@ -411,8 +412,8 @@ int main(int argc, char *argv[]) {
 
         http_server proxy(128*1024, SEC2MS(5));
         proxy.set_log_callback(log_request);
-        proxy.add_callback("/credit.json", boost::bind(credit_request, _1, boost::ref(cc)));
-        proxy.add_callback("*", boost::bind(proxy_request, _1, boost::ref(cc), boost::ref(bp)));
+        proxy.add_callback("/credit.json", std::bind(credit_request, _1, std::ref(cc)));
+        proxy.add_callback("*", std::bind(proxy_request, _1, std::ref(cc), std::ref(bp)));
         proxy.serve(conf.listen_address, conf.listen_port);
         return app.run();
     } catch (std::exception &e) {

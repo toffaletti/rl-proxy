@@ -3,8 +3,7 @@
 #include "fw/channel.hh"
 #include "fw/logging.hh"
 #include <netdb.h>
-#include <boost/unordered_map.hpp>
-#include <boost/bind.hpp>
+#include <unordered_map>
 
 using namespace fw;
 
@@ -29,7 +28,7 @@ public:
     struct nettask {
         channel<packet> ch;
     };
-    typedef boost::unordered_map<uint64_t, nettask> task_map;
+    typedef std::unordered_map<uint64_t, nettask> task_map;
 
     credit_client(
         const std::string &host_port,

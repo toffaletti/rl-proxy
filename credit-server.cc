@@ -18,8 +18,8 @@ static credit_server_config conf;
 
 class credit_server : boost::noncopyable {
 public:
-    typedef boost::unordered_map<uint64_t, uint64_t> kv_map_t;
-    typedef boost::unordered_map<std::string, kv_map_t> db_map_t;
+    typedef std::unordered_map<uint64_t, uint64_t> kv_map_t;
+    typedef std::unordered_map<std::string, kv_map_t> db_map_t;
 
     credit_server() : sock(AF_INET, SOCK_DGRAM) {
     }
