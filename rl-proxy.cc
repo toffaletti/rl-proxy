@@ -1,10 +1,10 @@
 #include <netdb.h>
 #include <memory>
 
-#include "fw/app.hh"
-#include "fw/buffer.hh"
-#include "fw/http_server.hh"
-#include "fw/json.hh"
+#include "libten/app.hh"
+#include "libten/buffer.hh"
+#include "libten/http_server.hh"
+#include "libten/json.hh"
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
@@ -13,8 +13,8 @@
 #include "credit-client.hh"
 #include "shared_pool.hh"
 
-using namespace fw;
-size_t default_stacksize=8*1024;
+using namespace ten;
+const size_t default_stacksize=8*1024;
 
 struct proxy_config : app_config {
     std::string backend_host;
@@ -54,7 +54,8 @@ struct response_read_error : std::exception {};
 
 class backend_pool : public shared_pool<netsock> {
 public:
-    backend_pool(proxy_config &conf) : shared_pool<netsock>("backend")
+    backend_pool(proxy_config &conf) :
+        shared_pool<netsock>("backend", std::bind(&backend_pool::new_resource, this))
     {
         host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
         if (backend_addrs.empty()) {
@@ -65,8 +66,8 @@ public:
 private:
     std::vector<address> backend_addrs;
 
-    netsock *new_resource() {
-        std::unique_ptr<netsock> cs(new netsock(AF_INET, SOCK_STREAM));
+    std::shared_ptr<netsock> new_resource() {
+        std::shared_ptr<netsock> cs(new netsock(AF_INET, SOCK_STREAM));
         std::vector<address> addrs = backend_addrs;
         std::random_shuffle(addrs.begin(), addrs.end());
         int status = -1;
@@ -75,27 +76,27 @@ private:
             if (status == 0) break;
         }
         if (status != 0) throw backend_connect_error();
-        return cs.release();
+        return cs;
     }
 };
 
 
 
 // globals
-static http_response resp_503(503, "Gateway Timeout", "HTTP/1.1",
-    2,
+static http_response resp_503(503, "Gateway Timeout",
+    Headers(
     "Connection", "close",
-    "Content-Length", "0"
+    "Content-Length", "0")
 );
-static http_response resp_invalid_apikey(400, "Invalid Key", "HTTP/1.1",
-    2,
+static http_response resp_invalid_apikey(400, "Invalid Key",
+    Headers(
     "Connection", "close",
-    "Content-Length", "0"
+    "Content-Length", "0")
 );
-static http_response resp_out_of_credits(503, "Credit Limit Reached", "HTTP/1.1",
-    2,
+static http_response resp_out_of_credits(503, "Credit Limit Reached",
+    Headers(
     "Connection", "close",
-    "Content-Length", "0"
+    "Content-Length", "0")
 );
 static proxy_config conf;
 static key_engine keng("");
@@ -120,40 +121,35 @@ static void calculate_reset_time(
 }
 
 static void add_rate_limit_headers(http_response &r, uint64_t limit, uint64_t remaining) {
-    r.set_header("X-RateLimit-Limit", limit);
-    r.set_header("X-RateLimit-Remaining", remaining);
-    r.set_header("X-RateLimit-Reset", to_time_t(reset_time));
+    r.set("X-RateLimit-Limit", limit);
+    r.set("X-RateLimit-Remaining", remaining);
+    r.set("X-RateLimit-Reset", to_time_t(reset_time));
 }
 
 static std::string get_request_apikey(http_server::request &h) {
     uri u = h.get_uri();
     uri::query_params params = u.parse_query();
-    uri::query_params::iterator param_it = uri::find_param(params, "apikey");
     std::string apikey;
 
     // check http query params for api key
-    if (param_it != params.end()) {
-      // found apikey query param
-      apikey = param_it->second;
-    }
-
+    uri::get_param(params, "apikey", apikey);
     // also check the http headers for an api key
     if (apikey.empty()) {
-        h.req.header_string("X-RateLimit-Key");
+        apikey = h.req.get("X-RateLimit-Key");
     }
 
     return apikey;
 }
 
 static void log_request(http_server::request &h) {
-    boost::posix_time::ptime stop(boost::posix_time::microsec_clock::universal_time());
-    boost::posix_time::time_duration elapsed = (stop - h.start);
+    using namespace std::chrono;
+    auto elapsed = monotonic_clock::now() - h.start;
     LOG(INFO) << h.agent_ip() << " " <<
         h.req.method << " " <<
         h.req.uri << " " <<
         h.resp.status_code << " " <<
-        h.resp.header_ull("Content-Length") << " " <<
-        elapsed.total_milliseconds() << " " <<
+        h.resp.get<size_t>("Content-Length") << " " <<
+        duration_cast<milliseconds>(elapsed).count() << " " <<
         get_request_apikey(h);
 }
 
@@ -200,7 +196,7 @@ void credit_request(http_server::request &h, credit_client &cc) {
         return;
     }
 
-    json_ptr j = json_ptr(json_object(), json_deleter());
+    json_ptr j = json_ptr(json_object(), json_decref);
     json_t *request_j = json_object();
     json_object_set_new(request_j, "parameters", json_object());
     json_object_set_new(request_j, "response_type", json_string("json"));
@@ -225,16 +221,12 @@ void credit_request(http_server::request &h, credit_client &cc) {
         json_integer(till_reset.total_seconds()));
     json_object_set_new(j.get(), "response", response_j);
 
-    std::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free_deleter());
+    std::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free);
     std::string js(js_.get());
     js += "\n";
     h.resp = http_response(200, "OK");
-    h.resp.set_header("Content-Type", "application/json");
-    h.resp.set_header("Content-Length", js.size());
-
+    h.resp.set_body(js, "application/json");
     h.send_response();
-
-    h.sock.send(js.data(), js.size(), SEC2MS(5));
 }
 
 void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp) {
@@ -272,18 +264,17 @@ backend_retry:
             http_request r(h.req.method, u.compose(true));
             r.headers = h.req.headers;
             // clean up headers that hurt caching
-            r.remove_header("X-Ratelimit-Key");
+            r.remove("X-Ratelimit-Key");
             if (!conf.vhost.empty()) {
-                r.set_header("Host", conf.vhost);
+                r.set("Host", conf.vhost);
             }
 
             std::string data = r.data();
+            if (!h.req.body.empty()) {
+                data += h.req.body;
+            }
             ssize_t nw = cs->send(data.data(), data.size(), SEC2MS(5));
             if (nw <= 0) { throw request_send_error(); }
-            if (!h.req.body.empty()) {
-                nw = cs->send(h.req.body.data(), h.req.body.size(), SEC2MS(5));
-                if (nw <= 0) { throw request_send_error(); }
-            }
 
             http_parser parser;
             h.resp = http_response(&r);
@@ -302,27 +293,22 @@ backend_retry:
             params = h.get_uri().parse_query();
             uri::query_params::iterator i = uri::find_param(params, "callback");
             if (i != params.end()) {
-                std::string content_type = h.resp.header_string("Content-Type");
+                std::string content_type = h.resp.get("Content-Type");
+                std::stringstream ss;
                 if (content_type.find("json") != std::string::npos) {
                     // wrap response in JSONP
-                    std::stringstream ss;
                     ss << i->second << "(" << h.resp.body << ");\n";
-                    h.resp.body = ss.str();
                 } else {
                     // TODO: would be nice to get some error message text in here
-                    std::stringstream ss;
                     ss << i->second << "({\"error\":" << h.resp.status_code << "});\n";
-                    h.resp.body = ss.str();
                 }
+                h.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
                 // must return valid javascript or websites that include this JSONP call will break
                 h.resp.status_code = 200;
-                h.resp.set_header("Content-Type", "application/javascript; charset=utf-8");
             }
             // HTTP/1.1 requires content-length
-            h.resp.set_header("Content-Length", h.resp.body.size());
+            h.resp.set("Content-Length", h.resp.body.size());
             nw = h.send_response();
-            if (nw <= 0) { goto response_send_error; }
-            nw = h.sock.send(h.resp.body.data(), h.resp.body.size());
             if (nw <= 0) { goto response_send_error; }
             return;
         } catch (request_send_error &e) {
@@ -355,6 +341,23 @@ invalid_apikey_error:
 response_send_error:
     PLOG(ERROR) << "response send error: " << h.req.method << " " << h.req.uri;
     return;
+}
+
+static void startup() {
+    using namespace std::placeholders;
+    try {
+        backend_pool bp(conf);
+        conf.credit_server_port = 9876;
+        parse_host_port(conf.credit_server_host, conf.credit_server_port);
+        credit_client cc(conf.credit_server_host, conf.credit_server_port);
+        http_server proxy(128*1024, SEC2MS(5));
+        proxy.set_log_callback(log_request);
+        proxy.add_route("/credit.json", std::bind(credit_request, _1, std::ref(cc)));
+        proxy.add_route("*", std::bind(proxy_request, _1, std::ref(cc), std::ref(bp)));
+        proxy.serve(conf.listen_address, conf.listen_port);
+    } catch (std::exception &e) {
+        LOG(ERROR) << e.what();
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -402,23 +405,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    using namespace std::placeholders;
-    try {
-        backend_pool bp(conf);
-        conf.credit_server_port = 9876;
-        parse_host_port(conf.credit_server_host, conf.credit_server_port);
-
-        credit_client cc(conf.credit_server_host, conf.credit_server_port);
-
-        http_server proxy(128*1024, SEC2MS(5));
-        proxy.set_log_callback(log_request);
-        proxy.add_callback("/credit.json", std::bind(credit_request, _1, std::ref(cc)));
-        proxy.add_callback("*", std::bind(proxy_request, _1, std::ref(cc), std::ref(bp)));
-        proxy.serve(conf.listen_address, conf.listen_port);
-        return app.run();
-    } catch (std::exception &e) {
-        LOG(ERROR) << e.what();
-    }
-    return EXIT_FAILURE;
+    // large stack needed for getaddrinfo
+    taskspawn(startup, 8*1024*1024);
+    return app.run();
 }
 

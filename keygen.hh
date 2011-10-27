@@ -5,8 +5,8 @@
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
-#include "fw/descriptors.hh"
-#include "fw/encoders.hh"
+#include "libten/descriptors.hh"
+#include "libten/encoders.hh"
 #include <boost/date_time/posix_time/posix_time.hpp>
 
 time_t to_time_t(const boost::posix_time::ptime &t) {

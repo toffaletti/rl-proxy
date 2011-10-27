@@ -4,8 +4,8 @@
 #include <boost/program_options.hpp>
 #include <boost/program_options/parsers.hpp>
 
-using namespace fw;
-size_t default_stacksize=8*1024;
+using namespace ten;
+const size_t default_stacksize=8*1024;
 
 namespace po = boost::program_options;
 

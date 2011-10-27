@@ -1,10 +1,10 @@
-#include "fw/app.hh"
+#include "libten/app.hh"
 #include "credit-client.hh"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
 
-using namespace fw;
-size_t default_stacksize=8*1024;
+using namespace ten;
+const size_t default_stacksize=8*1024;
 
 struct credit_server_config : app_config {
     std::string listen_address;

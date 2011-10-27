@@ -1,11 +1,11 @@
-#include "fw/descriptors.hh"
-#include "fw/task.hh"
-#include "fw/channel.hh"
-#include "fw/logging.hh"
+#include "libten/descriptors.hh"
+#include "libten/task.hh"
+#include "libten/channel.hh"
+#include "libten/logging.hh"
 #include <netdb.h>
 #include <unordered_map>
 
-using namespace fw;
+using namespace ten;
 
 struct packet {
     uint64_t xid;
@@ -73,9 +73,17 @@ public:
         ssize_t nw = sock.sendto(&pkt, sizeof(pkt), saddr);
         if (nw == sizeof(pkt)) {
             tasks[pkt.xid] = t;
-            bool success = t.ch.timed_recv(pkt, timeout_ms);
-            if (success) { val = pkt.value; }
-            return success;
+            try {
+                deadline dl(timeout_ms);
+                // TODO: use timed_recv instead of deadline
+                // once rendez has wait_util and wait_for
+                //bool success = t.ch.timed_recv(pkt, timeout_ms);
+                //if (success) { val = pkt.value; }
+                //return success;
+                pkt = t.ch.recv();
+                val = pkt.value;
+                return true;
+            } catch (deadline_reached &) {}
         }
         return false;
     }
@@ -99,7 +107,7 @@ private:
             VLOG(3) << "got packet xid: " << pkt.xid;
             task_map::iterator it = tasks.find(pkt.xid);
             if (it != tasks.end()) {
-                it->second.ch.send(pkt);
+                it->second.ch.send(std::move(pkt));
                 tasks.erase(it);
             }
         }

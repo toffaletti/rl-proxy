@@ -64,7 +64,7 @@ static void parse_args(options &opts, int argc, char *argv[]) {
 
 static boost::posix_time::ptime expire_string_to_time(const std::string &expire) {
     if (expire.size() < 2) {
-        throw fw::errorx("invalid expire time: %s", expire.c_str());
+        throw ten::errorx("invalid expire time: %s", expire.c_str());
     }
     unsigned int count = boost::lexical_cast<unsigned int>(expire.substr(0, expire.size()-1));
     char scale = expire[expire.size()-1];
@@ -86,7 +86,7 @@ static boost::posix_time::ptime expire_string_to_time(const std::string &expire)
             expire_time += years(count);
             break;
         default:
-            throw fw::errorx("invalid expire time: %s", expire.c_str());
+            throw ten::errorx("invalid expire time: %s", expire.c_str());
             break;
     }
 
