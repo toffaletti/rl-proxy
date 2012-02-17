@@ -28,7 +28,9 @@ _____
     Content-Type: application/json
     Date: Fri, 17 Feb 2012 12:22:19 GMT
 
-    {"response":{"limit":3600,"reset":1329552000,"refresh_in_secs":70661,"remaining":3599},"request":{"parameters":{},"response_type":"json","resource":"credit","url":"http://api.example.com/credit.json"}}
+    {"response":{"limit":3600,"reset":1329552000,"refresh_in_secs":70661,"remaining":3599},
+    "request":{"parameters":{},"response_type":"json","resource":"credit",
+    "url":"http://api.example.com/credit.json"}}
 
     $ curl -i 'http://localhost:8080/credit.json?apikey=PP3FMF5K6LCYHTRWFIAAAAAAAAAQBXAHIIAAACJ5'
     HTTP/1.1 200 OK
@@ -36,7 +38,9 @@ _____
     Content-Type: application/json
     Date: Fri, 17 Feb 2012 12:24:01 GMT
 
-    {"response":{"limit":4000000,"reset":1329552000,"refresh_in_secs":70559,"remaining":4000000},"request":{"parameters":{},"response_type":"json","resource":"credit","url":"http://api.example.com/credit.json?apikey=PP3FMF5K6LCYHTRWFIAAAAAAAAAQBXAHIIAAACJ5"}}
+    {"response":{"limit":4000000,"reset":1329552000,"refresh_in_secs":70559,"remaining":4000000},
+    "request":{"parameters":{},"response_type":"json","resource":"credit",
+    "url":"http://api.example.com/credit.json?apikey=PP3FMF5K6LCYHTRWFIAAAAAAAAAQBXAHIIAAACJ5"}}
 
 
 `credit-server` is the central UDP-based in-memory storage for credits
