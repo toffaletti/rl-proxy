@@ -80,6 +80,7 @@ public:
                 //bool success = t.ch.timed_recv(pkt, timeout_ms);
                 //if (success) { val = pkt.value; }
                 //return success;
+                taskstate("waiting for credit-server");
                 pkt = t.ch.recv();
                 val = pkt.value;
                 return true;
@@ -99,6 +100,7 @@ private:
     uint64_t _recv_tid;
 
     void recv_task() {
+        taskname("credit_client::recv_task");
         address faddr;
         packet pkt;
         while (fdwait(sock.fd, 'r')) {
