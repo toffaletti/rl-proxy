@@ -4,11 +4,13 @@ rl-proxy
 rate limiting http proxy server for JSON-based services.
 
 Features
-  *  HMAC signed keys require no key database for validation
-  *  Organization ID, Application ID, expiration date, and credit limit can be embedded in keys
-  *  Translate JSONP requests to non-JSONP requests to backend
-  *  Count credits based on IP address or key.
-  *  Provide /credit.json for credits remaining, limit and reset times
+
+  * HMAC signed keys require no key database for validation.
+  * Organization ID, Application ID, expiration date, and credit limit can be embedded in keys.
+  * Translate JSONP requests to non-JSONP requests on the backend.
+  * Strip cache busting headers and query params.
+  * Count credits based on IP address or key.
+  * Provide /credit.json for credits remaining, limit and reset times.
 
 Overview
 _____
