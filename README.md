@@ -20,6 +20,10 @@ _____
     $ ./rl-keygen --secret=12345 --org_id=42 --app_id=1 --expire=1d --credits=240000
     XQW2MHYHE3NTC2NDFIAAAAAAAAAQBXBHCIAIBKID
     {org_id:42,app_id:1,expires:2012/2/18,flags:0,credits:240000}
+    
+    $ ./rl-keygen --secret=12345 --org_id=42 --app_id=2 --expire=2000/1/1 --credits=240000
+    MVA26DOSEN4FD77CFIAAAAAAAABABUAXAEAIBKID
+    {org_id:42,app_id:2,expires:2000/1/1,flags:0,credits:240000}
 
 `rl-proxy` sits in front of your caching reverse proxys and application servers
 
@@ -44,6 +48,13 @@ _____
     {"response":{"limit":240000,"reset":1329552000,"refresh_in_secs":23917,"remaining":240000},
     "request":{"parameters":{},"response_type":"json","resource":"credit",
     "url":"http://api.example.com/credit.json?apikey=XQW2MHYHE3NTC2NDFIAAAAAAAAAQBXBHCIAIBKID"}}
+
+    $ curl -i http://localhost:8800/credit.json?apikey=MVA26DOSEN4FD77CFIAAAAAAAABABUAXAEAIBKID
+    HTTP/1.1 400 Expired Key
+    Connection: close
+    Content-Length: 0
+    Date: Sat, 18 Feb 2012 01:55:31 GMT
+
 
 `credit-server` is the central UDP-based in-memory storage for credits
 
