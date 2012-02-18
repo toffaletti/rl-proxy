@@ -74,7 +74,9 @@ struct config {
 // globals
 static config conf;
 
-void f(credit_client &cc) {
+static void startup() {
+    taskname("startup");
+    credit_client cc(conf.server_host, conf.server_port);
     if (cc.query(conf.db, conf.key, conf.value)) {
         std::cout << conf.db << "[" << conf.key << "]=" << conf.value << "\n";
     } else {
@@ -99,7 +101,6 @@ int main(int argc, char *argv[]) {
     conf.server_port = 9876;
     parse_host_port(conf.server_host, conf.server_port);
 
-    credit_client cc(conf.server_host, conf.server_port);
-    taskspawn(std::bind(f, std::ref(cc)));
+    taskspawn(startup, 8*1024*1024);
     return p.main(argc, argv);
 }
