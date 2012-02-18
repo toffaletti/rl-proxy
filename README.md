@@ -68,6 +68,7 @@ ____________
   * libboost-dev >= 1.40
   * libboost-date-time-dev >= 1.40
   * libboost-program-options-dev >= 1.40
+  * libboost-test-dev >= 1.40
   * ragel >= 6.5
     
 Build
