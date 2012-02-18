@@ -93,6 +93,11 @@ static http_response resp_invalid_apikey(400, "Invalid Key",
     "Connection", "close",
     "Content-Length", "0")
 );
+static http_response resp_expired_apikey(400, "Expired Key",
+    Headers(
+    "Connection", "close",
+    "Content-Length", "0")
+);
 static http_response resp_out_of_credits(503, "Credit Limit Reached",
     Headers(
     "Connection", "close",
@@ -153,14 +158,17 @@ static void log_request(http_server::request &h) {
         get_request_apikey(h);
 }
 
-static bool credit_check(http_server::request &h,
+static apikey_state credit_check(http_server::request &h,
     credit_client &cc, apikey &key, uint64_t &value)
 {
+    using namespace boost::gregorian;
+    using namespace boost::posix_time;
+
     uint64_t ckey = 0;
     std::string db = "ip";
     std::string b32key = get_request_apikey(h);
     inet_pton(AF_INET, h.agent_ip(conf.use_xff).c_str(), &ckey);
-    bool valid = true;
+    apikey_state state = valid;
     if (b32key.empty()) {
         // use default credit limit for ips
         key.data.credits = conf.credit_limit;
@@ -169,7 +177,7 @@ static bool credit_check(http_server::request &h,
             // report invalid key to caller
             // so we can send an error code back to the client
             // but not before deducting a credit from their ip
-            valid = false;
+            state = invalid;
             if (value == 0) value = 1; // force deducting for invalid keys
             LOG(WARNING) << "invalid apikey: " << b32key << "\n";
         } else {
@@ -181,19 +189,38 @@ static bool credit_check(http_server::request &h,
                 // XXX: lookup the limit in an external database
                 key.data.credits = conf.credit_limit;
             }
+            if (key.data.expires != no_expire) {
+                ptime now(second_clock::local_time());
+                date expire_date(
+                    key.data.expires.year,
+                    key.data.expires.month,
+                    key.data.expires.day);
+                if (now.date() > expire_date) {
+                    state = expired;
+                    if (value == 0) value = 1; // force deducting for invalid keys
+                    LOG(WARNING) << "expired apikey: " << b32key << "\n";
+                }
+            }
         }
     }
     cc.query(db, ckey, value);
-    return valid;
+    return state;
 }
 
 void credit_request(http_server::request &h, credit_client &cc) {
     uint64_t value = 0; // value of 0 will just return how many credits are used
     apikey key;
-    if (!credit_check(h, cc, key, value)) {
-        h.resp = resp_invalid_apikey;
-        h.send_response();
-        return;
+    switch (credit_check(h, cc, key, value)) {
+        case valid:
+            break;
+        case invalid:
+            h.resp = resp_invalid_apikey;
+            h.send_response();
+            return;
+        case expired:
+            h.resp = resp_expired_apikey;
+            h.send_response();
+            return;
     }
 
     json_ptr j = json_ptr(json_object(), json_decref);
@@ -233,8 +260,13 @@ void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp)
     try {
         apikey key;
         uint64_t value = 1;
-        if (!credit_check(h, cc, key, value)) {
-            goto invalid_apikey_error;
+        switch (credit_check(h, cc, key, value)) {
+            case valid:
+                break;
+            case invalid:
+                goto invalid_apikey_error;
+            case expired:
+                goto expired_apikey_error;
         }
 
         if (std::max((int64_t)0, (int64_t)(key.data.credits - value)) == 0) {
@@ -331,6 +363,11 @@ backend_retry:
     }
 out_of_credits_error:
     h.resp = resp_out_of_credits;
+    h.send_response();
+    return;
+expired_apikey_error:
+    PLOG(ERROR) << "expired apikey error " << h.req.method << " " << h.req.uri;
+    h.resp = resp_expired_apikey;
     h.send_response();
     return;
 invalid_apikey_error:

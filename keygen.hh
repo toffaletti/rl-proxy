@@ -21,12 +21,22 @@ struct expire_date_t {
     uint8_t day;
 } __attribute__((packed));
 
+bool operator != (const expire_date_t &a, const expire_date_t &b) {
+    return memcmp(&a, &b, sizeof(a)) != 0;
+}
+
 static expire_date_t no_expire = {0, 0, 0};
 
 std::ostream &operator <<(std::ostream &o, const expire_date_t &d) {
     o << d.year << "/" << (int)d.month << "/" << (int)d.day;
     return o;
 }
+
+enum apikey_state {
+    valid,
+    invalid,
+    expired
+};
 
 struct meta_t {
     uint64_t org_id:48;
