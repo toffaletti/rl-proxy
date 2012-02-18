@@ -48,3 +48,19 @@ _____
 `credit-server` is the central UDP-based in-memory storage for credits
 
     $ ./credit-server --reset-duration 24:00:00
+Dependencies
+____________
+
+  * cmake >= 2.8
+  * g++ >= 4.4.3
+  * libssl-dev >= 0.9.8
+  * libboost-dev >= 1.40
+    
+Build
+_____
+    $ git clone https://toffaletti@github.com/toffaletti/rl-proxy.git
+    $ cd rl-proxy
+    $ git submodule update --init
+    $ mkdir build; cd build
+    $ cmake ..
+    $ make -j4
