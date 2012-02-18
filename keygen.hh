@@ -16,9 +16,9 @@ time_t to_time_t(const boost::posix_time::ptime &t) {
 }
 
 struct expire_date_t {
-    uint16_t year;
-    uint8_t month:5;
-    uint8_t day:3;
+    uint16_t year:12;
+    uint16_t month:4;
+    uint8_t day;
 } __attribute__((packed));
 
 static expire_date_t no_expire = {0, 0, 0};

@@ -3,6 +3,7 @@
 #include <boost/program_options/parsers.hpp>
 
 #include <boost/date_time/gregorian/gregorian.hpp>
+#include <boost/algorithm/string.hpp>
 
 #include "keygen.hh"
 
@@ -63,34 +64,46 @@ static void parse_args(options &opts, int argc, char *argv[]) {
 }
 
 static boost::posix_time::ptime expire_string_to_time(const std::string &expire) {
-    if (expire.size() < 2) {
-        throw ten::errorx("invalid expire time: %s", expire.c_str());
-    }
-    unsigned int count = boost::lexical_cast<unsigned int>(expire.substr(0, expire.size()-1));
-    char scale = expire[expire.size()-1];
-
     using namespace boost::gregorian;
     using namespace boost::posix_time;
 
-    ptime now(second_clock::local_time());
-    ptime expire_time(now.date());
-
-    switch (scale) {
-        case 'd':
-            expire_time += days(count);
-            break;
-        case 'm':
-            expire_time += months(count);
-            break;
-        case 'y':
-            expire_time += years(count);
-            break;
-        default:
-            throw ten::errorx("invalid expire time: %s", expire.c_str());
-            break;
+    if (expire.size() < 2) {
+        throw ten::errorx("invalid expire time: %s", expire.c_str());
     }
 
-    return expire_time;
+    std::vector<std::string> splits;
+    boost::split(splits, expire, boost::is_any_of("/-"));
+    if (splits.size() == 3) {
+        date expire_date(
+            boost::lexical_cast<unsigned int>(splits[0]),
+            boost::lexical_cast<unsigned int>(splits[1]),
+            boost::lexical_cast<unsigned int>(splits[2])
+        );
+        return ptime(expire_date);
+    } else {
+        unsigned int count = boost::lexical_cast<unsigned int>(expire.substr(0, expire.size()-1));
+        char scale = expire[expire.size()-1];
+
+        ptime now(second_clock::local_time());
+        ptime expire_time(now.date());
+
+        switch (scale) {
+            case 'd':
+                expire_time += days(count);
+                break;
+            case 'm':
+                expire_time += months(count);
+                break;
+            case 'y':
+                expire_time += years(count);
+                break;
+            default:
+                throw ten::errorx("invalid expire time: %s", expire.c_str());
+                break;
+        }
+        return expire_time;
+    }
+    throw ten::errorx("invalid expire time: %s", expire.c_str());
 }
 
 struct config {
