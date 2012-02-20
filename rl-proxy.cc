@@ -241,9 +241,9 @@ void credit_request(http_server::request &h, credit_client &cc) {
     json_object_set_new(response_j, "reset", json_integer(to_time_t(reset_time)));
     json_object_set_new(response_j, "limit", json_integer(key.data.credits));
     json_object_set_new(response_j, "remaining",
-        json_integer(std::max((int64_t)0, (int64_t)(key.data.credits - value))));
+        json_integer(value > key.data.credits ? 0 : (key.data.credits - value)));
     add_rate_limit_headers(h.resp, key.data.credits,
-        std::max((int64_t)0, (int64_t)(key.data.credits - value)));
+        value > key.data.credits ? 0 : (key.data.credits - value));
     json_object_set_new(response_j, "refresh_in_secs",
         json_integer(till_reset.total_seconds()));
     json_object_set_new(j.get(), "response", response_j);
@@ -269,7 +269,7 @@ void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp)
                 goto expired_apikey_error;
         }
 
-        if (std::max((int64_t)0, (int64_t)(key.data.credits - value)) == 0) {
+        if (value > key.data.credits) {
             goto out_of_credits_error;
         }
 
@@ -321,7 +321,7 @@ backend_retry:
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
             add_rate_limit_headers(h.resp, key.data.credits,
-                std::max((int64_t)0, (int64_t)(key.data.credits - value)));
+                value > key.data.credits ? 0 : (key.data.credits - value));
             params = h.get_uri().parse_query();
             uri::query_params::iterator i = uri::find_param(params, "callback");
             if (i != params.end()) {
@@ -366,12 +366,12 @@ out_of_credits_error:
     h.send_response();
     return;
 expired_apikey_error:
-    PLOG(ERROR) << "expired apikey error " << h.req.method << " " << h.req.uri;
+    LOG(ERROR) << "expired apikey error " << h.req.method << " " << h.req.uri;
     h.resp = resp_expired_apikey;
     h.send_response();
     return;
 invalid_apikey_error:
-    PLOG(ERROR) << "invalid apikey error " << h.req.method << " " << h.req.uri;
+    LOG(ERROR) << "invalid apikey error " << h.req.method << " " << h.req.uri;
     h.resp = resp_invalid_apikey;
     h.send_response();
     return;
