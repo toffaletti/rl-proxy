@@ -66,6 +66,10 @@ ____________
   * g++ >= 4.4.3
   * libssl-dev >= 0.9.8
   * libboost-dev >= 1.40
+  * libboost-date-time-dev >= 1.40
+  * libboost-program-options-dev >= 1.40
+  * libboost-test-dev >= 1.40
+  * ragel >= 6.5
     
 Build
 _____
