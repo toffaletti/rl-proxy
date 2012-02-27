@@ -3,7 +3,7 @@
 
 #include "libten/app.hh"
 #include "libten/buffer.hh"
-#include "libten/http_server.hh"
+#include "libten/http/server.hh"
 #include "libten/json.hh"
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
