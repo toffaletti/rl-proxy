@@ -3,7 +3,7 @@
 
 #include "libten/app.hh"
 #include "libten/buffer.hh"
-#include "libten/http_server.hh"
+#include "libten/http/server.hh"
 #include "libten/json.hh"
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
@@ -14,7 +14,7 @@
 #include "shared_pool.hh"
 
 using namespace ten;
-const size_t default_stacksize=8*1024;
+const size_t default_stacksize=256*1024;
 
 struct proxy_config : app_config {
     std::string backend_host;
@@ -83,23 +83,26 @@ private:
 
 
 // globals
-static http_response resp_503(503, "Gateway Timeout",
+static http_response resp_503(503,
     Headers(
     "Connection", "close",
     "Content-Length", "0")
 );
-static http_response resp_invalid_apikey(400, "Invalid Key",
+static http_response resp_invalid_apikey(400,
     Headers(
+    "Warning", "Invalid key",
     "Connection", "close",
     "Content-Length", "0")
 );
-static http_response resp_expired_apikey(400, "Expired Key",
+static http_response resp_expired_apikey(400,
     Headers(
+    "Warning", "Expired key",
     "Connection", "close",
     "Content-Length", "0")
 );
-static http_response resp_out_of_credits(503, "Credit Limit Reached",
+static http_response resp_out_of_credits(503,
     Headers(
+    "Warning", "Credit limit reached",
     "Connection", "close",
     "Content-Length", "0")
 );
@@ -237,7 +240,7 @@ void credit_request(http_server::request &h, credit_client &cc) {
     boost::posix_time::time_duration till_reset;
     calculate_reset_time(conf.reset_duration, reset_time, till_reset);
 
-    h.resp = http_response(200, "OK");
+    h.resp = http_response(200);
     json_object_set_new(response_j, "reset", json_integer(to_time_t(reset_time)));
     json_object_set_new(response_j, "limit", json_integer(key.data.credits));
     json_object_set_new(response_j, "remaining",
@@ -251,7 +254,7 @@ void credit_request(http_server::request &h, credit_client &cc) {
     std::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free);
     std::string js(js_.get());
     js += "\n";
-    h.resp = http_response(200, "OK");
+    h.resp = http_response(200);
     h.resp.set_body(js, "application/json");
     h.send_response();
 }
@@ -311,11 +314,16 @@ backend_retry:
             http_parser parser;
             h.resp = http_response(&r);
             h.resp.parser_init(&parser);
-            char buf[4096];
+            buffer buf(4*1024);
             for (;;) {
-                ssize_t nr = cs->recv(buf, sizeof(buf), SEC2MS(5));
+                buf.reserve(4*1024);
+                ssize_t nr = cs->recv(buf.back(), buf.available(), SEC2MS(5));
                 if (nr < 0) { throw response_read_error(); }
-                if (h.resp.parse(&parser, buf, nr)) break;
+                buf.commit(nr);
+                size_t len = buf.size();
+                h.resp.parse(&parser, buf.front(), len);
+                buf.remove(len);
+                if (h.resp.complete) break;
                 if (nr == 0) { throw response_read_error(); }
             }
             boost::posix_time::time_duration till_reset;
