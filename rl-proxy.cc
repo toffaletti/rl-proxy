@@ -228,7 +228,7 @@ void credit_request(http_server::request &h, credit_client &cc) {
 
     uri u = h.get_uri(conf.vhost);
     json request{
-        {"parameters", json::object()},
+        {"parameters", json{}},
         {"response_type", "json"},
         {"resource", "credit"},
         {"url", u.compose()}
