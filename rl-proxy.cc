@@ -226,36 +226,36 @@ void credit_request(http_server::request &h, credit_client &cc) {
             return;
     }
 
-    json_ptr j = json_ptr(json_object(), json_decref);
-    json_t *request_j = json_object();
-    json_object_set_new(request_j, "parameters", json_object());
-    json_object_set_new(request_j, "response_type", json_string("json"));
-    json_object_set_new(request_j, "resource", json_string("credit"));
     uri u = h.get_uri(conf.vhost);
-    json_object_set_new(request_j, "url", json_string(u.compose().c_str()));
-    json_object_set_new(j.get(), "request", request_j);
-    json_t *response_j = json_object();
+    json request{
+        {"parameters", json::object()},
+        {"response_type", "json"},
+        {"resource", "credit"},
+        {"url", u.compose()}
+    };
 
     // this will recalculate the times if needed
     boost::posix_time::time_duration till_reset;
     calculate_reset_time(conf.reset_duration, reset_time, till_reset);
 
     h.resp = http_response(200);
-    json_object_set_new(response_j, "reset", json_integer(to_time_t(reset_time)));
-    json_object_set_new(response_j, "limit", json_integer(key.data.credits));
-    json_object_set_new(response_j, "remaining",
-        json_integer(value > key.data.credits ? 0 : (key.data.credits - value)));
     add_rate_limit_headers(h.resp, key.data.credits,
         value > key.data.credits ? 0 : (key.data.credits - value));
-    json_object_set_new(response_j, "refresh_in_secs",
-        json_integer(till_reset.total_seconds()));
-    json_object_set_new(j.get(), "response", response_j);
 
-    std::shared_ptr<char> js_(json_dumps(j.get(), JSON_COMPACT), free);
-    std::string js(js_.get());
-    js += "\n";
+    json response{
+        {"reset", (json_int_t)to_time_t(reset_time)},
+        {"limit", (json_int_t)key.data.credits},
+        {"remaining", (json_int_t)(value > key.data.credits ? 0 : (key.data.credits - value))},
+        {"refresh_in_secs", (json_int_t)(till_reset.total_seconds())}
+    };
+
+    json j{
+        {"request", request},
+        {"response", response}
+    };
+
     h.resp = http_response(200);
-    h.resp.set_body(js, "application/json");
+    h.resp.set_body(j.dump() + "\n", "application/json");
     h.send_response();
 }
 
