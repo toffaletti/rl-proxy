@@ -1,4 +1,4 @@
-#include "libten/app.hh"
+#include "ten/app.hh"
 #include "credit-client.hh"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>

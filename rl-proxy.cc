@@ -1,17 +1,17 @@
 #include <netdb.h>
 #include <memory>
 
-#include "libten/app.hh"
-#include "libten/buffer.hh"
-#include "libten/http/server.hh"
-#include "libten/json.hh"
+#include "ten/app.hh"
+#include "ten/buffer.hh"
+#include "ten/http/server.hh"
+#include "ten/json.hh"
+#include "ten/shared_pool.hh"
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
 
 #include "keygen.hh"
 #include "credit-client.hh"
-#include "shared_pool.hh"
 
 using namespace ten;
 const size_t default_stacksize=256*1024;

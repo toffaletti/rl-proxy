@@ -1,9 +1,10 @@
-#include "libten/descriptors.hh"
-#include "libten/task.hh"
-#include "libten/channel.hh"
-#include "libten/logging.hh"
+#include "ten/descriptors.hh"
+#include "ten/task.hh"
+#include "ten/channel.hh"
+#include "ten/logging.hh"
 #include <netdb.h>
 #include <unordered_map>
+#include <boost/utility.hpp>
 
 using namespace ten;
 
@@ -78,7 +79,7 @@ public:
         if (nw == sizeof(pkt)) {
             tasks[pkt.xid] = t;
             try {
-                deadline dl(timeout_ms);
+                deadline dl(milliseconds(timeout_ms));
                 // TODO: use timed_recv instead of deadline
                 // once rendez has wait_util and wait_for
                 //bool success = t.ch.timed_recv(pkt, timeout_ms);
