@@ -136,11 +136,10 @@ static void add_rate_limit_headers(http_response &r, uint64_t limit, uint64_t re
 
 static std::string get_request_apikey(http_server::request &h) {
     uri u = h.get_uri();
-    uri::query_params params = u.parse_query();
     std::string apikey;
 
     // check http query params for api key
-    uri::get_param(params, "apikey", apikey);
+    u.query_part().get("apikey", apikey);
     // also check the http headers for an api key
     if (apikey.empty()) {
         apikey = h.req.get("X-RateLimit-Key");
@@ -283,13 +282,13 @@ backend_retry:
             uri u = h.get_uri();
             // clean up query params
             // so the request is more cachable
-            uri::query_params params = u.parse_query();
-            uri::remove_param(params, "apikey");
+            uri::query_params params = u.query_part();
+            params.erase("apikey");
             // touching the body
-            uri::remove_param(params, "callback");
+            params.erase("callback");
             // jQuery adds _ to prevent caching of JSONP
-            uri::remove_param(params, "_");
-            u.query = uri::params_to_query(params);
+            params.erase("_");
+            u.query = params.str();
             // always request .json, never .js
             // reduce the number of cached paths
             std::string dot_js(".js");
@@ -330,8 +329,8 @@ backend_retry:
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
             add_rate_limit_headers(h.resp, key.data.credits,
                 value > key.data.credits ? 0 : (key.data.credits - value));
-            params = h.get_uri().parse_query();
-            uri::query_params::iterator i = uri::find_param(params, "callback");
+            params = h.get_uri().query_part();
+            uri::query_params::iterator i = params.find("callback");
             if (i != params.end()) {
                 std::string content_type = h.resp.get("Content-Type");
                 std::stringstream ss;
