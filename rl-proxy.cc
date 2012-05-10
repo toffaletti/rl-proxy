@@ -150,7 +150,7 @@ static std::string get_request_apikey(http_server::request &h) {
 
 static void log_request(http_server::request &h) {
     using namespace std::chrono;
-    auto elapsed = monotonic_clock::now() - h.start;
+    auto elapsed = steady_clock::now() - h.start;
     LOG(INFO) << h.agent_ip() << " " <<
         h.req.method << " " <<
         h.req.uri << " " <<
