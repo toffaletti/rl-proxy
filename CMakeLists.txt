@@ -15,3 +15,6 @@ target_link_libraries(credit-client ten boost_program_options)
 
 add_executable(credit-server credit-server.cc)
 target_link_libraries(credit-server ten boost_program_options)
+
+add_library(keygen SHARED keygen.cc)
+target_link_libraries(keygen ten)
