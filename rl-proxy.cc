@@ -191,13 +191,8 @@ static apikey_state credit_check(http_server::request &h,
                 // XXX: lookup the limit in an external database
                 key.data.credits = conf.credit_limit;
             }
-            if (key.data.expires != no_expire) {
-                ptime now(second_clock::local_time());
-                date expire_date(
-                    key.data.expires.year,
-                    key.data.expires.month,
-                    key.data.expires.day);
-                if (now.date() > expire_date) {
+            if (key.data.expires != 0) {
+                if (time(0) >= (time_t)key.data.expires) {
                     state = expired;
                     if (value == 0) value = 1; // force deducting for invalid keys
                     LOG(WARNING) << "expired apikey: " << b32key << "\n";

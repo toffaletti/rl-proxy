@@ -15,23 +15,6 @@ time_t to_time_t(const boost::posix_time::ptime &t) {
     return mktime(&tt);
 }
 
-struct expire_date_t {
-    uint16_t year:12;
-    uint16_t month:4;
-    uint8_t day;
-} __attribute__((packed));
-
-bool operator != (const expire_date_t &a, const expire_date_t &b) {
-    return memcmp(&a, &b, sizeof(a)) != 0;
-}
-
-static expire_date_t no_expire = {0, 0, 0};
-
-std::ostream &operator <<(std::ostream &o, const expire_date_t &d) {
-    o << d.year << "/" << (int)d.month << "/" << (int)d.day;
-    return o;
-}
-
 enum apikey_state {
     valid,
     invalid,
@@ -41,13 +24,13 @@ enum apikey_state {
 struct meta_t {
     uint64_t org_id:48;
     uint64_t app_id:16;
-    expire_date_t expires;
+    uint64_t expires;
     uint32_t flags:8;
     uint32_t credits:24;
 } __attribute__((packed));
 
 std::ostream &operator <<(std::ostream &o, const meta_t &m) {
-    o << "{org_id:" << m.org_id << ",app_id:" << m.app_id << ",expires:" << m.expires;
+    o << "{org_id:" << m.org_id << ",app_id:" << m.app_id << ",expires:" << ctime((time_t *)&m.expires);
     o << ",flags:" << m.flags << ",credits:" << m.credits << "}";
     return o;
 }
@@ -71,7 +54,7 @@ struct key_engine {
     std::string generate(uint64_t org_id,
         uint16_t app_id,
         uint32_t credits = 0,
-        expire_date_t expires = no_expire , uint8_t flags = 0)
+        uint64_t expires = 0, uint8_t flags = 0)
     {
         apikey key;
         memset(&key, 0, sizeof(key));

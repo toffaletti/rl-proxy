@@ -4,8 +4,10 @@ import time
 
 lib = cdll.LoadLibrary("./libkeygen.so")
 
+KEY_LENGTH = lib.key_length()
+
 def key_generate(secret, org_id, app_id, credits=0, expire_date=None, flags=0):
-    key = create_string_buffer(40)
+    key = create_string_buffer(KEY_LENGTH)
     expire_time = 0L
     if expire_date:
         expire_time = long(time.mktime(expire_date.timetuple()))

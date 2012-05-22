@@ -85,23 +85,48 @@ static boost::posix_time::ptime expire_string_to_time(const std::string &expire)
         char scale = expire[expire.size()-1];
 
         ptime now(second_clock::local_time());
-        ptime expire_time(now.date());
 
         switch (scale) {
             case 'd':
-                expire_time += days(count);
-                break;
+                {
+                    ptime expire_time(now.date());
+                    expire_time += days(count);
+                    return expire_time;
+                }
             case 'm':
-                expire_time += months(count);
-                break;
+                {
+                    ptime expire_time(now.date());
+                    expire_time += months(count);
+                    return expire_time;
+                }
             case 'y':
-                expire_time += years(count);
-                break;
+                {
+                    ptime expire_time(now.date());
+                    expire_time += years(count);
+                    return expire_time;
+                }
+            case 'H':
+                {
+                    ptime expire_time(now);
+                    expire_time += hours(count);
+                    return expire_time;
+                }
+            case 'M':
+                {
+                    ptime expire_time(now);
+                    expire_time += minutes(count);
+                    return expire_time;
+                }
+            case 'S':
+                {
+                    ptime expire_time(now);
+                    expire_time += seconds(count);
+                    return expire_time;
+                }
             default:
                 throw ten::errorx("invalid expire time: %s", expire.c_str());
                 break;
         }
-        return expire_time;
     }
     throw ten::errorx("invalid expire time: %s", expire.c_str());
 }
@@ -142,12 +167,10 @@ int main(int argc, char *argv[]) {
     }
 
     try {
-        expire_date_t expires = no_expire;
+        uint64_t expires = 0;
         if (!conf.expire.empty()) {
             boost::posix_time::ptime expire_ptime = expire_string_to_time(conf.expire);
-            expires.year = expire_ptime.date().year();
-            expires.month = expire_ptime.date().month();
-            expires.day = expire_ptime.date().day();
+            expires = to_time_t(expire_ptime);
         }
 
         key_engine eng(conf.secret);
