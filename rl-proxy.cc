@@ -270,8 +270,8 @@ void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp)
             goto out_of_credits_error;
         }
 
-        backend_pool::scoped_resource cs(bp);
 backend_retry:
+        backend_pool::scoped_resource cs(bp);
         try {
 
             uri u = h.get_uri();
@@ -320,6 +320,7 @@ backend_retry:
                 if (h.resp.complete) break;
                 if (nr == 0) { throw response_read_error(); }
             }
+            cs.done();
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
             add_rate_limit_headers(h.resp, key.data.credits,
@@ -347,11 +348,9 @@ backend_retry:
             return;
         } catch (request_send_error &e) {
             PLOG(ERROR) << "request send error: " << h.req.method << " " << h.req.uri;
-            cs.exchange();
             goto backend_retry;
         } catch (response_read_error &e) {
             PLOG(ERROR) << "response read error: " << h.req.method << " " << h.req.uri;
-            cs.exchange();
             goto backend_retry;
         }
     } catch (backend_connect_error &e) {
