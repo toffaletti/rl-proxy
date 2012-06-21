@@ -204,7 +204,7 @@ static apikey_state credit_check(http_server::request &h,
     return state;
 }
 
-void credit_request(http_server::request &h, credit_client &cc) {
+static void credit_request(http_server::request &h, credit_client &cc) {
     uint64_t value = 0; // value of 0 will just return how many credits are used
     apikey key;
     switch (credit_check(h, cc, key, value)) {
@@ -236,11 +236,14 @@ void credit_request(http_server::request &h, credit_client &cc) {
     add_rate_limit_headers(h.resp, key.data.credits,
         value > key.data.credits ? 0 : (key.data.credits - value));
 
+    json_int_t credit_limit = key.data.credits;
+    json_int_t credits_remaining = 
+        (value > key.data.credits ? 0 : (key.data.credits - value));
     json response{
-        {"reset", (json_int_t)to_time_t(reset_time)},
-        {"limit", (json_int_t)key.data.credits},
-        {"remaining", (json_int_t)(value > key.data.credits ? 0 : (key.data.credits - value))},
-        {"refresh_in_secs", (json_int_t)(till_reset.total_seconds())}
+        {"reset", to_time_t(reset_time)},
+        {"limit", credit_limit},
+        {"remaining", credits_remaining},
+        {"refresh_in_secs", till_reset.total_seconds()}
     };
 
     json j{
@@ -248,55 +251,91 @@ void credit_request(http_server::request &h, credit_client &cc) {
         {"response", response}
     };
 
-    h.resp = http_response(200);
     h.resp.set_body(j.dump() + "\n", "application/json");
     h.send_response();
 }
 
-void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp) {
-    try {
-        apikey key;
-        uint64_t value = 1;
-        switch (credit_check(h, cc, key, value)) {
-            case valid:
-                break;
-            case invalid:
-                goto invalid_apikey_error;
-            case expired:
-                goto expired_apikey_error;
-        }
+static http_request normalize_request(http_server::request &h) {
+    uri u = h.get_uri();
+    // clean up query params
+    // so the request is more cachable
+    uri::query_params params = u.query_part();
+    params.erase("apikey");
+    // touching the body
+    params.erase("callback");
+    // jQuery adds _ to prevent caching of JSONP
+    params.erase("_");
+    u.query = params.str();
+    // always request .json, never .js
+    // reduce the number of cached paths
+    std::string dot_js(".js");
+    if (boost::ends_with(u.path, dot_js)) {
+        u.path += "on"; // make .js .json
+    }
+    http_request r(h.req.method, u.compose(true));
+    r.headers = h.req.headers;
+    // clean up headers that hurt caching
+    r.remove("X-Ratelimit-Key");
+    if (!conf.vhost.empty()) {
+        r.set("Host", conf.vhost);
+    }
 
-        if (value > key.data.credits) {
-            goto out_of_credits_error;
-        }
+    return r;
+}
 
-backend_retry:
+// TODO: maybe<> and maybe_if<> would work well here once chip has time
+static std::pair<bool, std::string> get_jsonp(http_server::request &h) {
+    auto params = h.get_uri().query_part();
+    auto i = params.find("callback");
+    return std::make_pair(i != params.end(), i->second);
+}
+
+static void make_jsonp_response(http_server::request &h, const std::string &callback) {
+    std::string content_type = h.resp.get("Content-Type");
+    std::stringstream ss;
+    if (content_type.find("json") != std::string::npos) {
+        // wrap response in JSONP
+        ss << callback << "(" << h.resp.body << ");\n";
+    } else {
+        // TODO: would be nice to get some error message text in here
+        json status{
+            {"status", static_cast<json_int_t>(h.resp.status_code)},
+            {"reason", h.resp.reason()}
+        };
+        ss << callback << "(" << status << ");\n";
+    }
+    h.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
+    // must return valid javascript or websites that include this JSONP call will break
+    h.resp.status_code = 200;
+}
+
+static void perform_proxy(http_server::request &h, credit_client &cc, backend_pool &bp) {
+    apikey key;
+    uint64_t value = 1;
+    switch (credit_check(h, cc, key, value)) {
+        case valid:
+            break;
+        case invalid:
+            LOG(ERROR) << "invalid apikey error " << h.req.method << " " << h.req.uri;
+            h.resp = resp_invalid_apikey;
+            return;
+        case expired:
+            LOG(ERROR) << "expired apikey error " << h.req.method << " " << h.req.uri;
+            h.resp = resp_expired_apikey;
+            return;
+    }
+
+    if (value > key.data.credits) {
+        // TODO: jsonp requires always having a 200 return, so these other status
+        // codes are a bug when the request is jsonp.
+        h.resp = resp_out_of_credits;
+        return;
+    }
+
+    for (;;) {
         backend_pool::scoped_resource cs(bp);
         try {
-
-            uri u = h.get_uri();
-            // clean up query params
-            // so the request is more cachable
-            uri::query_params params = u.query_part();
-            params.erase("apikey");
-            // touching the body
-            params.erase("callback");
-            // jQuery adds _ to prevent caching of JSONP
-            params.erase("_");
-            u.query = params.str();
-            // always request .json, never .js
-            // reduce the number of cached paths
-            std::string dot_js(".js");
-            if (boost::ends_with(u.path, dot_js)) {
-                u.path += "on"; // make .js .json
-            }
-            http_request r(h.req.method, u.compose(true));
-            r.headers = h.req.headers;
-            // clean up headers that hurt caching
-            r.remove("X-Ratelimit-Key");
-            if (!conf.vhost.empty()) {
-                r.set("Host", conf.vhost);
-            }
+            http_request r = normalize_request(h);
 
             std::string data = r.data();
             if (!h.req.body.empty()) {
@@ -321,64 +360,42 @@ backend_retry:
                 if (nr == 0) { throw response_read_error(); }
             }
             cs.done();
+
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
             add_rate_limit_headers(h.resp, key.data.credits,
                 value > key.data.credits ? 0 : (key.data.credits - value));
-            params = h.get_uri().query_part();
-            uri::query_params::iterator i = params.find("callback");
-            if (i != params.end()) {
-                std::string content_type = h.resp.get("Content-Type");
-                std::stringstream ss;
-                if (content_type.find("json") != std::string::npos) {
-                    // wrap response in JSONP
-                    ss << i->second << "(" << h.resp.body << ");\n";
-                } else {
-                    // TODO: would be nice to get some error message text in here
-                    ss << i->second << "({\"error\":" << h.resp.status_code << "});\n";
-                }
-                h.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
-                // must return valid javascript or websites that include this JSONP call will break
-                h.resp.status_code = 200;
-            }
-            // HTTP/1.1 requires content-length
-            h.resp.set("Content-Length", h.resp.body.size());
-            nw = h.send_response();
-            if (nw <= 0) { goto response_send_error; }
             return;
         } catch (request_send_error &e) {
             PLOG(ERROR) << "request send error: " << h.req.method << " " << h.req.uri;
-            goto backend_retry;
+            continue;
         } catch (response_read_error &e) {
             PLOG(ERROR) << "response read error: " << h.req.method << " " << h.req.uri;
-            goto backend_retry;
+            continue;
+        }
+    }
+}
+
+static void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp) {
+    try {
+        perform_proxy(h, cc, bp);    
+        auto jp = get_jsonp(h);
+        if (jp.first) { // is this jsonp?
+            make_jsonp_response(h, jp.second);
+        }
+        // HTTP/1.1 requires content-length
+        h.resp.set("Content-Length", h.resp.body.size());
+        ssize_t nw = h.send_response();
+        if (nw <= 0) {
+            PLOG(ERROR) << "response send error: " << h.req.method << " " << h.req.uri;
         }
     } catch (backend_connect_error &e) {
         PLOG(ERROR) << "request connect error " << h.req.method << " " << h.req.uri;
         h.resp = resp_503;
         h.send_response();
-        return;
     } catch (std::exception &e) {
         LOG(ERROR) << "exception error: " << h.req.uri << " : " << e.what();
-        return;
     }
-out_of_credits_error:
-    h.resp = resp_out_of_credits;
-    h.send_response();
-    return;
-expired_apikey_error:
-    LOG(ERROR) << "expired apikey error " << h.req.method << " " << h.req.uri;
-    h.resp = resp_expired_apikey;
-    h.send_response();
-    return;
-invalid_apikey_error:
-    LOG(ERROR) << "invalid apikey error " << h.req.method << " " << h.req.uri;
-    h.resp = resp_invalid_apikey;
-    h.send_response();
-    return;
-response_send_error:
-    PLOG(ERROR) << "response send error: " << h.req.method << " " << h.req.uri;
-    return;
 }
 
 static void startup() {
@@ -407,11 +424,15 @@ int main(int argc, char *argv[]) {
         ("db", po::value<std::string>(&conf.db), "mysql db name")
         ("db-host", po::value<std::string>(&conf.db_host)->default_value("localhost"), "mysqld host address")
         ("db-user", po::value<std::string>(&conf.db_user)->default_value("ub"), "mysqld user")
-        ("credit-server", po::value<std::string>(&conf.credit_server_host)->default_value("localhost"), "credit-server host:port")
-        ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(3600), "credit limit given to new clients")
+        ("credit-server", po::value<std::string>(&conf.credit_server_host)->default_value("localhost"),
+         "credit-server host:port")
+        ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(3600),
+         "credit limit given to new clients")
         ("vhost", po::value<std::string>(&conf.vhost), "use this virtual host address in Host header to backend")
-        ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false), "trust and use the ip from X-Forwarded-For when available")
-        ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"), "duration for credit reset interval in hh:mm:ss format")
+        ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false),
+         "trust and use the ip from X-Forwarded-For when available")
+        ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"),
+         "duration for credit reset interval in hh:mm:ss format")
         ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
     ;
