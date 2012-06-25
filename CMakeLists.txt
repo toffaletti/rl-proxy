@@ -18,3 +18,9 @@ target_link_libraries(credit-server ten boost_program_options)
 
 add_library(keygen SHARED keygen.cc)
 target_link_libraries(keygen ten)
+
+install(TARGETS rl-proxy DESTINATION bin)
+install(TARGETS rl-keygen DESTINATION bin)
+install(TARGETS credit-server DESTINATION bin)
+install(TARGETS credit-client DESTINATION bin)
+install(TARGETS keygen DESTINATION lib)
