@@ -20,7 +20,7 @@ add_library(keygen SHARED keygen.cc)
 target_link_libraries(keygen ten)
 
 execute_process(COMMAND
-    python2.7 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())"
+    /opt/python/bin/python2.7 -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())"
     OUTPUT_VARIABLE PYTHON_LIBDIR
     OUTPUT_STRIP_TRAILING_WHITESPACE
     )
