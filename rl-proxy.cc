@@ -287,7 +287,10 @@ static http_request normalize_request(http_server::request &h) {
 static std::pair<bool, std::string> get_jsonp(http_server::request &h) {
     auto params = h.get_uri().query_part();
     auto i = params.find("callback");
-    return std::make_pair(i != params.end(), i->second);
+    if (i == params.end()) {
+        return std::make_pair(false, std::string());
+    }
+    return std::make_pair(true, i->second);
 }
 
 static void make_jsonp_response(http_server::request &h, const std::string &callback) {
