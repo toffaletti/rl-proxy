@@ -2,11 +2,14 @@ from ctypes import *
 from datetime import date
 import time
 
+__all__ = ['key_generate', 'key_verify']
+
 lib = cdll.LoadLibrary("libkeygen.so")
 
 KEY_LENGTH = lib.key_length()
 
 def key_generate(secret, org_id, app_id, credits=0, expire_date=None, flags=0):
+    """generate an api key with the supplied meta data"""
     key = create_string_buffer(KEY_LENGTH)
     expire_time = 0L
     if expire_date:
@@ -18,6 +21,7 @@ def key_generate(secret, org_id, app_id, credits=0, expire_date=None, flags=0):
     return key.raw
 
 def key_verify(secret, key):
+    """verify that an api is valid, returns the embedded meta data if valid, otherwise None"""
     org_id = c_ulonglong()
     app_id = c_ushort()
     credits = c_ulong()
