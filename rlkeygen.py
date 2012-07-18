@@ -1,3 +1,12 @@
+"""
+generate and verify keys for rl-proxy
+
+>>> key_generate("weee", 1, 1, 500, date(1980, 7, 12), 3)
+'MMGLFFCSIPWEYDXYAEAAAAAAAAAQB4DZZUJQAAAAAAB7IAIA'
+>>> key_verify("weee", 'MMGLFFCSIPWEYDXYAEAAAAAAAAAQB4DZZUJQAAAAAAB7IAIA')
+(1L, 1, 500L, datetime.date(1980, 7, 12), 3)
+"""
+
 from ctypes import *
 from datetime import date
 import time
@@ -36,6 +45,5 @@ def key_verify(secret, key):
     return None
 
 if __name__ == '__main__':
-    key = key_generate("weee", 1, 1, 500, date(1980, 7, 12), 3)
-    print key
-    print key_verify("weee", key)
+    import doctest
+    doctest.testmod()
