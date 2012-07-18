@@ -2,7 +2,7 @@ from ctypes import *
 from datetime import date
 import time
 
-lib = cdll.LoadLibrary("./libkeygen.so")
+lib = cdll.LoadLibrary("libkeygen.so")
 
 KEY_LENGTH = lib.key_length()
 
