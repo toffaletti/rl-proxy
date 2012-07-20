@@ -30,7 +30,11 @@ struct meta_t {
 } __attribute__((packed));
 
 std::ostream &operator <<(std::ostream &o, const meta_t &m) {
-    o << "{org_id:" << m.org_id << ",app_id:" << m.app_id << ",expires:" << ctime((time_t *)&m.expires);
+    struct tm tm = {};
+    localtime_r((time_t *)&m.expires, &tm);
+    char buf[128];
+    strftime(buf, sizeof(buf), "%c", &tm);
+    o << "{org_id:" << m.org_id << ",app_id:" << m.app_id << ",expires:" << buf;
     o << ",flags:" << m.flags << ",credits:" << m.credits << "}";
     return o;
 }
