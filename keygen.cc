@@ -39,7 +39,7 @@ extern "C" {
             char key[key_engine::b32keylen]
             )
     {
-        key_engine eng(secret);
+        key_engine eng{secret};
         memset(key, 0, sizeof(key));
         try {
             std::string k = eng.generate(org_id, app_id, credits, expires, flags);
@@ -62,7 +62,7 @@ extern "C" {
             )
     {
         apikey k;
-        key_engine eng(secret);
+        key_engine eng{secret};
         bool valid = eng.verify(key, k);
         if (valid) {
             if (org_id)

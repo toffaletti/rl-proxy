@@ -21,11 +21,11 @@ public:
     typedef std::unordered_map<uint64_t, uint64_t> kv_map_t;
     typedef std::unordered_map<std::string, kv_map_t> db_map_t;
 
-    credit_server() : sock(AF_INET, SOCK_DGRAM) {
+    credit_server() : sock{AF_INET, SOCK_DGRAM} {
     }
 
     void serve(const std::string &ipaddr, uint16_t port) {
-        address baddr(ipaddr.c_str(), port);
+        address baddr{ipaddr.c_str(), port};
         sock.bind(baddr);
         sock.getsockname(baddr);
         LOG(INFO) << "listening on: " << baddr;
@@ -42,11 +42,11 @@ private:
     {
         using namespace boost::gregorian;
         using namespace boost::posix_time;
-        ptime now(second_clock::local_time());
-        ptime reset_start_time(now.date());
-        time_iterator tit(reset_start_time, reset_duration);
+        ptime now{second_clock::local_time()};
+        ptime reset_start_time{now.date()};
+        time_iterator tit{reset_start_time, reset_duration};
         while (tit <= now) { ++tit; } // find the next reset time
-        ptime reset_time(*tit);
+        ptime reset_time{*tit};
         return reset_time - now;
     }
 
@@ -90,7 +90,7 @@ private:
 };
 
 int main(int argc, char *argv[]) {
-    application app("0.0.1", conf);
+    application app{"0.0.1", conf};
     namespace po = boost::program_options;
     app.opts.configuration.add_options()
         ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")

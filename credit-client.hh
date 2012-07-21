@@ -80,7 +80,7 @@ public:
         if (nw == sizeof(pkt)) {
             tasks[pkt.xid] = t;
             try {
-                deadline dl(milliseconds(timeout_ms));
+                deadline dl{milliseconds(100)};
                 // TODO: use timed_recv instead of deadline
                 // once rendez has wait_util and wait_for
                 //bool success = t.ch.timed_recv(pkt, timeout_ms);

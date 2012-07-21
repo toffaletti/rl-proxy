@@ -32,6 +32,7 @@ struct proxy_config : app_config {
     std::string reset_duration_string;
     std::string secret;
     boost::posix_time::time_duration reset_duration;
+    bool secure_log;
 };
 
 static void host2addresses(std::string &host, uint16_t port, std::vector<address> &addrs) {
@@ -40,7 +41,7 @@ static void host2addresses(std::string &host, uint16_t port, std::vector<address
     int status = getaddrinfo(host.c_str(), NULL, NULL, &results);
     if (status == 0) {
         for (result = results; result != NULL; result = result->ai_next) {
-            address addr(result->ai_addr, result->ai_addrlen);
+            address addr{result->ai_addr, result->ai_addrlen};
             addr.port(port);
             addrs.push_back(addr);
         }
@@ -67,7 +68,7 @@ private:
     std::vector<address> backend_addrs;
 
     std::shared_ptr<netsock> new_resource() {
-        std::shared_ptr<netsock> cs(new netsock(AF_INET, SOCK_STREAM));
+        std::shared_ptr<netsock> cs{new netsock(AF_INET, SOCK_STREAM)};
         std::vector<address> addrs = backend_addrs;
         std::random_shuffle(addrs.begin(), addrs.end());
         int status = -1;
@@ -83,31 +84,31 @@ private:
 
 
 // globals
-static http_response resp_503(503,
+static http_response resp_503{503,
     Headers(
     "Connection", "close",
     "Content-Length", "0")
-);
-static http_response resp_invalid_apikey(400,
+};
+static http_response resp_invalid_apikey{400,
     Headers(
     "Warning", "Invalid key",
     "Connection", "close",
     "Content-Length", "0")
-);
-static http_response resp_expired_apikey(400,
+};
+static http_response resp_expired_apikey{400,
     Headers(
     "Warning", "Expired key",
     "Connection", "close",
     "Content-Length", "0")
-);
-static http_response resp_out_of_credits(503,
+};
+static http_response resp_out_of_credits{503,
     Headers(
     "Warning", "Credit limit reached",
     "Connection", "close",
     "Content-Length", "0")
-);
+};
 static proxy_config conf;
-static key_engine keng("");
+static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
 
 static void calculate_reset_time(
@@ -118,10 +119,10 @@ static void calculate_reset_time(
     using namespace boost::gregorian;
     using namespace boost::posix_time;
 
-    ptime now(second_clock::local_time());
+    ptime now{second_clock::local_time()};
     if (reset_time.is_not_a_date_time() || reset_time <= now) {
-      ptime reset_start_time(now.date());
-      time_iterator tit(reset_start_time, conf.reset_duration);
+      ptime reset_start_time{now.date()};
+      time_iterator tit{reset_start_time, conf.reset_duration};
       while (tit <= now) { ++tit; } // find the next reset time
       reset_time = *tit;
     }
@@ -151,13 +152,24 @@ static std::string get_request_apikey(http_server::request &h) {
 static void log_request(http_server::request &h) {
     using namespace std::chrono;
     auto elapsed = steady_clock::now() - h.start;
-    LOG(INFO) << h.agent_ip() << " " <<
-        h.req.method << " " <<
-        h.req.uri << " " <<
-        h.resp.status_code << " " <<
-        h.resp.get<size_t>("Content-Length") << " " <<
-        duration_cast<milliseconds>(elapsed).count() << " " <<
-        get_request_apikey(h);
+    if (conf.secure_log) {
+        LOG(INFO) <<
+            h.req.method << " " <<
+            h.get_uri().path << " " <<
+            h.resp.status_code << " " <<
+            h.resp.get<size_t>("Content-Length") << " " <<
+            duration_cast<milliseconds>(elapsed).count() << " " <<
+            get_request_apikey(h);
+    } else {
+        LOG(INFO) <<
+            h.agent_ip() << " " <<
+            h.req.method << " " <<
+            h.req.uri << " " <<
+            h.resp.status_code << " " <<
+            h.resp.get<size_t>("Content-Length") << " " <<
+            duration_cast<milliseconds>(elapsed).count() << " " <<
+            get_request_apikey(h);
+    }
 }
 
 static apikey_state credit_check(http_server::request &h,
@@ -222,7 +234,7 @@ static void credit_request(http_server::request &h, credit_client &cc) {
 
     uri u = h.get_uri(conf.vhost);
     json request{
-        {"parameters", json({})},
+        {"parameters", json{{}}},
         {"response_type", "json"},
         {"resource", "credit"},
         {"url", u.compose()}
@@ -232,7 +244,7 @@ static void credit_request(http_server::request &h, credit_client &cc) {
     boost::posix_time::time_duration till_reset;
     calculate_reset_time(conf.reset_duration, reset_time, till_reset);
 
-    h.resp = http_response(200);
+    h.resp = http_response{200};
     add_rate_limit_headers(h.resp, key.data.credits,
         value > key.data.credits ? 0 : (key.data.credits - value));
 
@@ -268,7 +280,7 @@ static http_request normalize_request(http_server::request &h) {
     u.query = params.str();
     // always request .json, never .js
     // reduce the number of cached paths
-    std::string dot_js(".js");
+    std::string dot_js{".js"};
     if (boost::ends_with(u.path, dot_js)) {
         u.path += "on"; // make .js .json
     }
@@ -336,7 +348,7 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
     }
 
     for (;;) {
-        backend_pool::scoped_resource cs(bp);
+        backend_pool::scoped_resource cs{bp};
         try {
             http_request r = normalize_request(h);
 
@@ -348,7 +360,7 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
             if (nw <= 0) { throw request_send_error(); }
 
             http_parser parser;
-            h.resp = http_response(&r);
+            h.resp = http_response{&r};
             h.resp.parser_init(&parser);
             buffer buf(4*1024);
             for (;;) {
@@ -404,11 +416,11 @@ static void proxy_request(http_server::request &h, credit_client &cc, backend_po
 static void startup() {
     using namespace std::placeholders;
     try {
-        backend_pool bp(conf);
+        backend_pool bp{conf};
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
         credit_client cc(conf.credit_server_host, conf.credit_server_port);
-        http_server proxy(128*1024, SEC2MS(5));
+        http_server proxy{128*1024, SEC2MS(5)};
         proxy.set_log_callback(log_request);
         proxy.add_route("/credit.json", std::bind(credit_request, _1, std::ref(cc)));
         proxy.add_route("*", std::bind(proxy_request, _1, std::ref(cc), std::ref(bp)));
@@ -419,7 +431,7 @@ static void startup() {
 }
 
 int main(int argc, char *argv[]) {
-    application app("0.0.1", conf);
+    application app{"0.0.1", conf};
     namespace po = boost::program_options;
     app.opts.configuration.add_options()
         ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
@@ -438,6 +450,7 @@ int main(int argc, char *argv[]) {
          "duration for credit reset interval in hh:mm:ss format")
         ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
+        ("secure-log", po::value<bool>(&conf.secure_log)->default_value(false), "secure logging format")
     ;
     app.opts.pdesc.add("backend", -1);
 
