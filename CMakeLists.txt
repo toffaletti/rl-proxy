@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 2.8)
 
 add_subdirectory(libten)
 include(${CMAKE_CURRENT_SOURCE_DIR}/libten/cmake/ten.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/libten/cmake/version.cmake)
 
 add_executable(rl-proxy rl-proxy.cc)
 target_link_libraries(rl-proxy ten boost_program_options jansson)
