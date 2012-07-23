@@ -81,8 +81,6 @@ private:
     }
 };
 
-
-
 // globals
 static http_response resp_503{503,
     Headers(
@@ -110,6 +108,27 @@ static http_response resp_out_of_credits{503,
 static proxy_config conf;
 static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
+
+class log_request_t {
+    http_server::request &_h;
+    explicit log_request_t(http_server::request &h) : _h(h) {}
+public:
+    friend std::ostream &operator << (std::ostream &o, const log_request_t &lr);
+    friend log_request_t log_r(http_server::request &h);
+};
+
+log_request_t log_r(http_server::request &h) {
+    return log_request_t(h);
+}
+
+std::ostream &operator << (std::ostream &o, const log_request_t &lr) {
+    if (conf.secure_log) {
+        o << lr._h.req.method << " " << lr._h.get_uri().path;
+    } else {
+        o << lr._h.req.method << " " << lr._h.req.uri;
+    }
+    return o;
+}
 
 static void calculate_reset_time(
     const boost::posix_time::time_duration &reset_duration,
@@ -331,11 +350,11 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
         case valid:
             break;
         case invalid:
-            LOG(ERROR) << "invalid apikey error " << h.req.method << " " << h.req.uri;
+            LOG(ERROR) << "invalid apikey error " << log_r(h);
             h.resp = resp_invalid_apikey;
             return;
         case expired:
-            LOG(ERROR) << "expired apikey error " << h.req.method << " " << h.req.uri;
+            LOG(ERROR) << "expired apikey error " << log_r(h);
             h.resp = resp_expired_apikey;
             return;
     }
@@ -382,10 +401,10 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
                 value > key.data.credits ? 0 : (key.data.credits - value));
             return;
         } catch (request_send_error &e) {
-            PLOG(ERROR) << "request send error: " << h.req.method << " " << h.req.uri;
+            PLOG(ERROR) << "request send error: " << log_r(h);
             continue;
         } catch (response_read_error &e) {
-            PLOG(ERROR) << "response read error: " << h.req.method << " " << h.req.uri;
+            PLOG(ERROR) << "response read error: " << log_r(h);
             continue;
         }
     }
@@ -402,14 +421,14 @@ static void proxy_request(http_server::request &h, credit_client &cc, backend_po
         h.resp.set("Content-Length", h.resp.body.size());
         ssize_t nw = h.send_response();
         if (nw <= 0) {
-            PLOG(ERROR) << "response send error: " << h.req.method << " " << h.req.uri;
+            PLOG(ERROR) << "response send error: " << log_r(h);
         }
     } catch (backend_connect_error &e) {
-        PLOG(ERROR) << "request connect error " << h.req.method << " " << h.req.uri;
+        PLOG(ERROR) << "request connect error " << log_r(h);
         h.resp = resp_503;
         h.send_response();
     } catch (std::exception &e) {
-        LOG(ERROR) << "exception error: " << h.req.uri << " : " << e.what();
+        LOG(ERROR) << "exception error: " << log_r(h) << " : " << e.what();
     }
 }
 
