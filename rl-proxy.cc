@@ -1,5 +1,6 @@
 #include <netdb.h>
 #include <memory>
+#include <unordered_set>
 
 #include "ten/app.hh"
 #include "ten/buffer.hh"
@@ -19,9 +20,6 @@ const size_t default_stacksize=256*1024;
 struct proxy_config : app_config {
     std::string backend_host;
     unsigned short backend_port;
-    std::string db;
-    std::string db_host;
-    std::string db_user;
     std::string credit_server_host;
     uint16_t credit_server_port;
     std::string listen_address;
@@ -33,6 +31,7 @@ struct proxy_config : app_config {
     std::string secret;
     boost::posix_time::time_duration reset_duration;
     bool secure_log;
+    std::string grandfather_file;
 };
 
 static void host2addresses(std::string &host, uint16_t port, std::vector<address> &addrs) {
@@ -108,6 +107,7 @@ static http_response resp_out_of_credits{503,
 static proxy_config conf;
 static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
+static std::unordered_set<std::string> grandfather_keys;
 
 class log_request_t {
     http_server::request &_h;
@@ -199,20 +199,24 @@ static apikey_state credit_check(http_server::request &h,
 
     uint64_t ckey = 0;
     std::string db = "ip";
-    std::string b32key = get_request_apikey(h);
+    std::string rawkey = get_request_apikey(h);
     inet_pton(AF_INET, h.agent_ip(conf.use_xff).c_str(), &ckey);
     apikey_state state = valid;
-    if (b32key.empty()) {
+    if (rawkey.empty()) {
         // use default credit limit for ips
         key.data.credits = conf.credit_limit;
     } else {
-        if (!keng.verify(b32key, key)) {
+        // check grandfathered keys
+        if (grandfather_keys.count(rawkey)) {
+            return valid;
+        }
+        if (!keng.verify(rawkey, key)) {
             // report invalid key to caller
             // so we can send an error code back to the client
             // but not before deducting a credit from their ip
             state = invalid;
             if (value == 0) value = 1; // force deducting for invalid keys
-            LOG(WARNING) << "invalid apikey: " << b32key << "\n";
+            LOG(WARNING) << "invalid apikey: " << rawkey << "\n";
         } else {
             LOG(INFO) << "key data: " << key.data << "\n";
             db = "org";
@@ -226,7 +230,7 @@ static apikey_state credit_check(http_server::request &h,
                 if (time(0) >= (time_t)key.data.expires) {
                     state = expired;
                     if (value == 0) value = 1; // force deducting for invalid keys
-                    LOG(WARNING) << "expired apikey: " << b32key << "\n";
+                    LOG(WARNING) << "expired apikey: " << rawkey << "\n";
                 }
             }
         }
@@ -455,9 +459,6 @@ int main(int argc, char *argv[]) {
     app.opts.configuration.add_options()
         ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
         ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(8080), "listening port")
-        ("db", po::value<std::string>(&conf.db), "mysql db name")
-        ("db-host", po::value<std::string>(&conf.db_host)->default_value("localhost"), "mysqld host address")
-        ("db-user", po::value<std::string>(&conf.db_user)->default_value("ub"), "mysqld user")
         ("credit-server", po::value<std::string>(&conf.credit_server_host)->default_value("localhost"),
          "credit-server host:port")
         ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(3600),
@@ -470,6 +471,7 @@ int main(int argc, char *argv[]) {
         ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
         ("secure-log", po::value<bool>(&conf.secure_log)->default_value(false), "secure logging format")
+        ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
     ;
     app.opts.pdesc.add("backend", -1);
 
@@ -497,6 +499,21 @@ int main(int argc, char *argv[]) {
     } catch (std::exception &e) {
         LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
         exit(EXIT_FAILURE);
+    }
+
+    if (!conf.grandfather_file.empty()) {
+        std::ifstream gf(conf.grandfather_file);
+        if (gf.is_open()) {
+            std::string line;
+            while (std::getline(gf, line)) {
+                if (line.empty() || line[0] == '#') continue;
+                VLOG(2) << "adding grandfather key: " << line;
+                grandfather_keys.insert(line);
+            }
+        } else {
+            LOG(ERROR) << "Could not open " << conf.grandfather_file;
+            exit(EXIT_FAILURE);
+        }
     }
 
     // large stack needed for getaddrinfo
