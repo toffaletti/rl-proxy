@@ -1,3 +1,11 @@
+ub-rlproxy (0.0.2-1) lucid; urgency=low
+
+  * fix timeouts
+  * secure logging
+  * grandfathered keys
+
+ -- Jason Toffaletti <jason@topsy.com>  Wed, 25 Jul 2012 13:13:31 -0700
+
 ub-rlproxy (0.0.1-1) lucid; urgency=low
 
   * initial release
