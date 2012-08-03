@@ -397,7 +397,13 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
                 if (h.resp.complete) break;
                 if (nr == 0) { throw response_read_error(); }
             }
-            cs.done();
+
+            if ((h.resp.http_version == "HTTP/1.0" && h.resp.get("Connection") == "Keep-Alive") ||
+                    h.resp.get("Connection") != "close")
+            {
+                // try to keep connection persistent by returning it to the pool
+                cs.done();
+            }
 
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
