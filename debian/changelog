@@ -1,3 +1,9 @@
+ub-rlproxy (0.0.3-1) lucid; urgency=low
+
+  * handle connection close header properly
+
+ -- Jason Toffaletti <jason@topsy.com>  Tue, 07 Aug 2012 12:20:16 -0700
+
 ub-rlproxy (0.0.2-1) lucid; urgency=low
 
   * fix timeouts
