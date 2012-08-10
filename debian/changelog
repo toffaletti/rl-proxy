@@ -1,3 +1,9 @@
+ub-rlproxy (0.0.4-1) lucid; urgency=low
+
+  * fix build deps
+
+ -- Jason Toffaletti <jason@topsy.com>  Fri, 10 Aug 2012 14:15:23 -0700
+
 ub-rlproxy (0.0.3-1) lucid; urgency=low
 
   * handle connection close header properly
