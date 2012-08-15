@@ -81,7 +81,7 @@ private:
 };
 
 // globals
-static http_response resp_503{503,
+static http_response resp_connect_error_503{503,
     Headers(
     "Connection", "close",
     "Content-Length", "0")
@@ -219,8 +219,15 @@ static apikey_state credit_check(http_server::request &h,
             LOG(WARNING) << "invalid apikey: " << rawkey << "\n";
         } else {
             LOG(INFO) << "key data: " << key.data << "\n";
-            db = "org";
-            ckey = key.data.org_id;
+            // TODO: org only db
+            db = "app";
+            uint64_t org_id = key.data.org_id;
+            uint64_t app_id = key.data.app_id;
+
+            // pack org_id and app_id into 64 bits for the key
+            ckey = org_id << 16;
+            ckey |= app_id;
+
             if (key.data.credits == 0) {
                 // use default credit limit for keys with no embedded limit
                 // XXX: lookup the limit in an external database
@@ -335,10 +342,13 @@ static void make_jsonp_response(http_server::request &h, const std::string &call
         // wrap response in JSONP
         ss << callback << "(" << h.resp.body << ");\n";
     } else {
-        // TODO: would be nice to get some error message text in here
+        std::string msg = h.resp.get("Warning");
+        if (msg.empty()) {
+            msg = h.resp.reason();
+        }
         json status{
             {"status", static_cast<json_int_t>(h.resp.status_code)},
-            {"reason", h.resp.reason()}
+            {"reason", msg}
         };
         ss << callback << "(" << status << ");\n";
     }
@@ -364,8 +374,6 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
     }
 
     if (value > key.data.credits) {
-        // TODO: jsonp requires always having a 200 return, so these other status
-        // codes are a bug when the request is jsonp.
         h.resp = resp_out_of_credits;
         return;
     }
@@ -435,7 +443,7 @@ static void proxy_request(http_server::request &h, credit_client &cc, backend_po
         }
     } catch (backend_connect_error &e) {
         PLOG(ERROR) << "request connect error " << log_r(h);
-        h.resp = resp_503;
+        h.resp = resp_connect_error_503;
         h.send_response();
     } catch (std::exception &e) {
         LOG(ERROR) << "exception error: " << log_r(h) << " : " << e.what();
