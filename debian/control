@@ -1,7 +1,7 @@
 Source: ub-rlproxy
 Priority: extra
 Maintainer: Topsy Ops <ops@topsy.com>
-Build-Depends: debhelper (>= 7), libboost1.49-all-dev (>= 1.49.0), libc-ares-dev (>= 1.7.0), cmake (>= 2.8.0), g++-4.7 (>= 4.7.0), ragel (>= 6.5), libssl-dev (>=0.9.8), ub-python2.7 (>= 2.7-4), libcloog-ppl0 (>= 0.15.11), git-core (>= 1.7.0.4)
+Build-Depends: debhelper (>= 7), libboost1.51-all-dev (>= 1.51.0), libc-ares-dev (>= 1.7.0), cmake (>= 2.8.0), g++-4.7 (>= 4.7.0), ragel (>= 6.5), libssl-dev (>=0.9.8), ub-python2.7 (>= 2.7-4), libcloog-ppl0 (>= 0.15.11), git-core (>= 1.7.0.4)
 Standards-Version: 3.8.3
 Section: misc
 Homepage: http://topsy.com
@@ -9,5 +9,5 @@ Homepage: http://topsy.com
 Package: ub-rlproxy
 Section: misc
 Architecture: any
-Depends: libboost-program-options1.49.0 (>= 1.49.0), libc-ares2 (>= 1.7.0), libstdc++6 (>= 4.7.1)
+Depends: ${shlibs:Depends}, libstdc++6 (>= 4.7.1)
 Description: rate limiting proxy server
