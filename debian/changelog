@@ -1,3 +1,12 @@
+ub-rlproxy (0.0.6-1) lucid; urgency=low
+
+  * fix uninitialized variable bug in credit limit check for grandfathered
+    keys
+  * use org_id and app_id for credit key
+  * better jsonp error messages
+
+ -- Jason Toffaletti <jason@topsy.com>  Mon, 17 Sep 2012 15:58:25 -0700
+
 ub-rlproxy (0.0.4-1) lucid; urgency=low
 
   * fix build deps
