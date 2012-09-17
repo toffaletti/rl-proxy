@@ -208,6 +208,7 @@ static apikey_state credit_check(http_server::request &h,
     } else {
         // check grandfathered keys
         if (grandfather_keys.count(rawkey)) {
+            value = 0;
             return valid;
         }
         if (!keng.verify(rawkey, key)) {
@@ -248,7 +249,7 @@ static apikey_state credit_check(http_server::request &h,
 
 static void credit_request(http_server::request &h, credit_client &cc) {
     uint64_t value = 0; // value of 0 will just return how many credits are used
-    apikey key;
+    apikey key = {};
     switch (credit_check(h, cc, key, value)) {
         case valid:
             break;
@@ -358,7 +359,7 @@ static void make_jsonp_response(http_server::request &h, const std::string &call
 }
 
 static void perform_proxy(http_server::request &h, credit_client &cc, backend_pool &bp) {
-    apikey key;
+    apikey key = {};
     uint64_t value = 1;
     switch (credit_check(h, cc, key, value)) {
         case valid:
