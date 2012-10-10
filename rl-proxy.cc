@@ -458,11 +458,11 @@ static void startup() {
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
         credit_client cc(conf.credit_server_host, conf.credit_server_port);
-        http_server proxy{128*1024, SEC2MS(5)};
-        proxy.set_log_callback(log_request);
-        proxy.add_route("/credit.json", std::bind(credit_request, _1, std::ref(cc)));
-        proxy.add_route("*", std::bind(proxy_request, _1, std::ref(cc), std::ref(bp)));
-        proxy.serve(conf.listen_address, conf.listen_port);
+        std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024, SEC2MS(5));
+        proxy->set_log_callback(log_request);
+        proxy->add_route("/credit.json", std::bind(credit_request, _1, std::ref(cc)));
+        proxy->add_route("*", std::bind(proxy_request, _1, std::ref(cc), std::ref(bp)));
+        proxy->serve(conf.listen_address, conf.listen_port);
     } catch (std::exception &e) {
         LOG(ERROR) << e.what();
     }
