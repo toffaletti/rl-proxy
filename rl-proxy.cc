@@ -82,24 +82,24 @@ private:
 
 // globals
 static http_response resp_connect_error_503{503,
-    Headers(
+    http_headers(
     "Connection", "close",
     "Content-Length", "0")
 };
 static http_response resp_invalid_apikey{400,
-    Headers(
+    http_headers(
     "Warning", "Invalid key",
     "Connection", "close",
     "Content-Length", "0")
 };
 static http_response resp_expired_apikey{400,
-    Headers(
+    http_headers(
     "Warning", "Expired key",
     "Connection", "close",
     "Content-Length", "0")
 };
 static http_response resp_out_of_credits{503,
-    Headers(
+    http_headers(
     "Warning", "Credit limit reached",
     "Connection", "close",
     "Content-Length", "0")
@@ -110,22 +110,22 @@ static boost::posix_time::ptime reset_time;
 static std::unordered_set<std::string> grandfather_keys;
 
 class log_request_t {
-    http_server::request &_h;
-    explicit log_request_t(http_server::request &h) : _h(h) {}
+    http_exchange &_ex;
+    explicit log_request_t(http_exchange &ex) : _ex(ex) {}
 public:
     friend std::ostream &operator << (std::ostream &o, const log_request_t &lr);
-    friend log_request_t log_r(http_server::request &h);
+    friend log_request_t log_r(http_exchange &ex);
 };
 
-log_request_t log_r(http_server::request &h) {
-    return log_request_t(h);
+log_request_t log_r(http_exchange &ex) {
+    return log_request_t(ex);
 }
 
 std::ostream &operator << (std::ostream &o, const log_request_t &lr) {
     if (conf.secure_log) {
-        o << lr._h.req.method << " " << lr._h.get_uri().path;
+        o << lr._ex.req.method << " " << lr._ex.get_uri().path;
     } else {
-        o << lr._h.req.method << " " << lr._h.req.uri;
+        o << lr._ex.req.method << " " << lr._ex.req.uri;
     }
     return o;
 }
@@ -154,44 +154,44 @@ static void add_rate_limit_headers(http_response &r, uint64_t limit, uint64_t re
     r.set("X-RateLimit-Reset", to_time_t(reset_time));
 }
 
-static std::string get_request_apikey(http_server::request &h) {
-    uri u = h.get_uri();
+static std::string get_request_apikey(http_exchange &ex) {
+    uri u = ex.get_uri();
     std::string apikey;
 
     // check http query params for api key
     u.query_part().get("apikey", apikey);
     // also check the http headers for an api key
     if (apikey.empty()) {
-        apikey = h.req.get("X-RateLimit-Key");
+        apikey = ex.req.get("X-RateLimit-Key");
     }
 
     return apikey;
 }
 
-static void log_request(http_server::request &h) {
+static void log_request(http_exchange &ex) {
     using namespace std::chrono;
-    auto elapsed = steady_clock::now() - h.start;
+    auto elapsed = steady_clock::now() - ex.start;
     if (conf.secure_log) {
         LOG(INFO) <<
-            h.req.method << " " <<
-            h.get_uri().path << " " <<
-            h.resp.status_code << " " <<
-            h.resp.get<size_t>("Content-Length") << " " <<
+            ex.req.method << " " <<
+            ex.get_uri().path << " " <<
+            ex.resp.status_code << " " <<
+            ex.resp.get<size_t>("Content-Length") << " " <<
             duration_cast<milliseconds>(elapsed).count() << " " <<
-            get_request_apikey(h);
+            get_request_apikey(ex);
     } else {
         LOG(INFO) <<
-            h.agent_ip() << " " <<
-            h.req.method << " " <<
-            h.req.uri << " " <<
-            h.resp.status_code << " " <<
-            h.resp.get<size_t>("Content-Length") << " " <<
+            ex.agent_ip() << " " <<
+            ex.req.method << " " <<
+            ex.req.uri << " " <<
+            ex.resp.status_code << " " <<
+            ex.resp.get<size_t>("Content-Length") << " " <<
             duration_cast<milliseconds>(elapsed).count() << " " <<
-            get_request_apikey(h);
+            get_request_apikey(ex);
     }
 }
 
-static apikey_state credit_check(http_server::request &h,
+static apikey_state credit_check(http_exchange &ex,
     credit_client &cc, apikey &key, uint64_t &value)
 {
     using namespace boost::gregorian;
@@ -199,8 +199,8 @@ static apikey_state credit_check(http_server::request &h,
 
     uint64_t ckey = 0;
     std::string db = "ip";
-    std::string rawkey = get_request_apikey(h);
-    inet_pton(AF_INET, h.agent_ip(conf.use_xff).c_str(), &ckey);
+    std::string rawkey = get_request_apikey(ex);
+    inet_pton(AF_INET, ex.agent_ip(conf.use_xff).c_str(), &ckey);
     apikey_state state = valid;
     if (rawkey.empty()) {
         // use default credit limit for ips
@@ -247,23 +247,23 @@ static apikey_state credit_check(http_server::request &h,
     return state;
 }
 
-static void credit_request(http_server::request &h, credit_client &cc) {
+static void credit_request(http_exchange &ex, credit_client &cc) {
     uint64_t value = 0; // value of 0 will just return how many credits are used
     apikey key = {};
-    switch (credit_check(h, cc, key, value)) {
+    switch (credit_check(ex, cc, key, value)) {
         case valid:
             break;
         case invalid:
-            h.resp = resp_invalid_apikey;
-            h.send_response();
+            ex.resp = resp_invalid_apikey;
+            ex.send_response();
             return;
         case expired:
-            h.resp = resp_expired_apikey;
-            h.send_response();
+            ex.resp = resp_expired_apikey;
+            ex.send_response();
             return;
     }
 
-    uri u = h.get_uri(conf.vhost);
+    uri u = ex.get_uri(conf.vhost);
     json request{
         {"parameters", json{{}}},
         {"response_type", "json"},
@@ -275,8 +275,8 @@ static void credit_request(http_server::request &h, credit_client &cc) {
     boost::posix_time::time_duration till_reset;
     calculate_reset_time(conf.reset_duration, reset_time, till_reset);
 
-    h.resp = http_response{200};
-    add_rate_limit_headers(h.resp, key.data.credits,
+    ex.resp = http_response{200};
+    add_rate_limit_headers(ex.resp, key.data.credits,
         value > key.data.credits ? 0 : (key.data.credits - value));
 
     json_int_t credit_limit = key.data.credits;
@@ -294,12 +294,12 @@ static void credit_request(http_server::request &h, credit_client &cc) {
         {"response", response}
     };
 
-    h.resp.set_body(j.dump() + "\n", "application/json");
-    h.send_response();
+    ex.resp.set_body(j.dump() + "\n", "application/json");
+    ex.send_response();
 }
 
-static http_request normalize_request(http_server::request &h) {
-    uri u = h.get_uri();
+static http_request normalize_request(http_exchange &ex) {
+    uri u = ex.get_uri();
     // clean up query params
     // so the request is more cachable
     uri::query_params params = u.query_part();
@@ -315,8 +315,8 @@ static http_request normalize_request(http_server::request &h) {
     if (boost::ends_with(u.path, dot_js)) {
         u.path += "on"; // make .js .json
     }
-    http_request r(h.req.method, u.compose(true));
-    r.headers = h.req.headers;
+    http_request r(ex.req.method, u.compose(true));
+    r.headers = ex.req.headers;
     // clean up headers that hurt caching
     r.remove("X-Ratelimit-Key");
     if (!conf.vhost.empty()) {
@@ -327,8 +327,8 @@ static http_request normalize_request(http_server::request &h) {
 }
 
 // TODO: maybe<> and maybe_if<> would work well here once chip has time
-static std::pair<bool, std::string> get_jsonp(http_server::request &h) {
-    auto params = h.get_uri().query_part();
+static std::pair<bool, std::string> get_jsonp(http_exchange &ex) {
+    auto params = ex.get_uri().query_part();
     auto i = params.find("callback");
     if (i == params.end()) {
         return std::make_pair(false, std::string());
@@ -336,64 +336,64 @@ static std::pair<bool, std::string> get_jsonp(http_server::request &h) {
     return std::make_pair(true, i->second);
 }
 
-static void make_jsonp_response(http_server::request &h, const std::string &callback) {
-    std::string content_type = h.resp.get("Content-Type");
+static void make_jsonp_response(http_exchange &ex, const std::string &callback) {
+    std::string content_type = ex.resp.get("Content-Type");
     std::stringstream ss;
     if (content_type.find("json") != std::string::npos) {
         // wrap response in JSONP
-        ss << callback << "(" << h.resp.body << ");\n";
+        ss << callback << "(" << ex.resp.body << ");\n";
     } else {
-        std::string msg = h.resp.get("Warning");
+        std::string msg = ex.resp.get("Warning");
         if (msg.empty()) {
-            msg = h.resp.reason();
+            msg = ex.resp.reason();
         }
         json status{
-            {"status", static_cast<json_int_t>(h.resp.status_code)},
+            {"status", static_cast<json_int_t>(ex.resp.status_code)},
             {"reason", msg}
         };
         ss << callback << "(" << status << ");\n";
     }
-    h.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
+    ex.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
     // must return valid javascript or websites that include this JSONP call will break
-    h.resp.status_code = 200;
+    ex.resp.status_code = 200;
 }
 
-static void perform_proxy(http_server::request &h, credit_client &cc, backend_pool &bp) {
+static void perform_proxy(http_exchange &ex, credit_client &cc, backend_pool &bp) {
     apikey key = {};
     uint64_t value = 1;
-    switch (credit_check(h, cc, key, value)) {
+    switch (credit_check(ex, cc, key, value)) {
         case valid:
             break;
         case invalid:
-            LOG(ERROR) << "invalid apikey error " << log_r(h);
-            h.resp = resp_invalid_apikey;
+            LOG(ERROR) << "invalid apikey error " << log_r(ex);
+            ex.resp = resp_invalid_apikey;
             return;
         case expired:
-            LOG(ERROR) << "expired apikey error " << log_r(h);
-            h.resp = resp_expired_apikey;
+            LOG(ERROR) << "expired apikey error " << log_r(ex);
+            ex.resp = resp_expired_apikey;
             return;
     }
 
     if (value > key.data.credits) {
-        h.resp = resp_out_of_credits;
+        ex.resp = resp_out_of_credits;
         return;
     }
 
     for (;;) {
         backend_pool::scoped_resource cs{bp};
         try {
-            http_request r = normalize_request(h);
+            http_request r = normalize_request(ex);
 
             std::string data = r.data();
-            if (!h.req.body.empty()) {
-                data += h.req.body;
+            if (!ex.req.body.empty()) {
+                data += ex.req.body;
             }
             ssize_t nw = cs->send(data.data(), data.size(), SEC2MS(5));
             if (nw <= 0) { throw request_send_error(); }
 
             http_parser parser;
-            h.resp = http_response{&r};
-            h.resp.parser_init(&parser);
+            ex.resp = http_response{&r};
+            ex.resp.parser_init(&parser);
             buffer buf(4*1024);
             for (;;) {
                 buf.reserve(4*1024);
@@ -401,14 +401,14 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
                 if (nr < 0) { throw response_read_error(); }
                 buf.commit(nr);
                 size_t len = buf.size();
-                h.resp.parse(&parser, buf.front(), len);
+                ex.resp.parse(&parser, buf.front(), len);
                 buf.remove(len);
-                if (h.resp.complete) break;
+                if (ex.resp.complete) break;
                 if (nr == 0) { throw response_read_error(); }
             }
 
-            if ((h.resp.http_version == "HTTP/1.0" && h.resp.get("Connection") == "Keep-Alive") ||
-                    h.resp.get("Connection") != "close")
+            if ((ex.resp.http_version == "HTTP/1.0" && ex.resp.get("Connection") == "Keep-Alive") ||
+                    ex.resp.get("Connection") != "close")
             {
                 // try to keep connection persistent by returning it to the pool
                 cs.done();
@@ -416,38 +416,38 @@ static void perform_proxy(http_server::request &h, credit_client &cc, backend_po
 
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
-            add_rate_limit_headers(h.resp, key.data.credits,
+            add_rate_limit_headers(ex.resp, key.data.credits,
                 value > key.data.credits ? 0 : (key.data.credits - value));
             return;
         } catch (request_send_error &e) {
-            PLOG(ERROR) << "request send error: " << log_r(h);
+            PLOG(ERROR) << "request send error: " << log_r(ex);
             continue;
         } catch (response_read_error &e) {
-            PLOG(ERROR) << "response read error: " << log_r(h);
+            PLOG(ERROR) << "response read error: " << log_r(ex);
             continue;
         }
     }
 }
 
-static void proxy_request(http_server::request &h, credit_client &cc, backend_pool &bp) {
+static void proxy_request(http_exchange &ex, credit_client &cc, backend_pool &bp) {
     try {
-        perform_proxy(h, cc, bp);    
-        auto jp = get_jsonp(h);
+        perform_proxy(ex, cc, bp);
+        auto jp = get_jsonp(ex);
         if (jp.first) { // is this jsonp?
-            make_jsonp_response(h, jp.second);
+            make_jsonp_response(ex, jp.second);
         }
         // HTTP/1.1 requires content-length
-        h.resp.set("Content-Length", h.resp.body.size());
-        ssize_t nw = h.send_response();
+        ex.resp.set("Content-Length", ex.resp.body.size());
+        ssize_t nw = ex.send_response();
         if (nw <= 0) {
-            PLOG(ERROR) << "response send error: " << log_r(h);
+            PLOG(ERROR) << "response send error: " << log_r(ex);
         }
     } catch (backend_connect_error &e) {
-        PLOG(ERROR) << "request connect error " << log_r(h);
-        h.resp = resp_connect_error_503;
-        h.send_response();
+        PLOG(ERROR) << "request connect error " << log_r(ex);
+        ex.resp = resp_connect_error_503;
+        ex.send_response();
     } catch (std::exception &e) {
-        LOG(ERROR) << "exception error: " << log_r(h) << " : " << e.what();
+        LOG(ERROR) << "exception error: " << log_r(ex) << " : " << e.what();
     }
 }
 
