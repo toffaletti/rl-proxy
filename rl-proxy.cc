@@ -48,6 +48,38 @@ static void host2addresses(std::string &host, uint16_t port, std::vector<address
     freeaddrinfo(results);
 }
 
+// TODO: maybe<> and maybe_if<> would work well here once chip has time
+static std::pair<bool, std::string> get_jsonp(http_exchange &ex) {
+    auto params = ex.get_uri().query_part();
+    auto i = params.find("callback");
+    if (i == params.end()) {
+        return std::make_pair(false, std::string());
+    }
+    return std::make_pair(true, i->second);
+}
+
+static void make_jsonp_response(http_exchange &ex, const std::string &callback) {
+    std::string content_type = ex.resp.get("Content-Type");
+    std::stringstream ss;
+    if (content_type.find("json") != std::string::npos) {
+        // wrap response in JSONP
+        ss << callback << "(" << ex.resp.body << ");\n";
+    } else {
+        std::string msg = ex.resp.get("Warning");
+        if (msg.empty()) {
+            msg = ex.resp.reason();
+        }
+        json status{
+            {"status", static_cast<json_int_t>(ex.resp.status_code)},
+            {"reason", msg}
+        };
+        ss << callback << "(" << status << ");\n";
+    }
+    ex.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
+    // must return valid javascript or websites that include this JSONP call will break
+    ex.resp.status_code = 200;
+}
+
 struct backend_connect_error : std::exception {};
 struct request_send_error : std::exception {};
 struct response_read_error : std::exception {};
@@ -295,6 +327,10 @@ static void credit_request(http_exchange &ex, credit_client &cc) {
     };
 
     ex.resp.set_body(j.dump() + "\n", "application/json");
+    auto jp = get_jsonp(ex);
+    if (jp.first) {
+        make_jsonp_response(ex, jp.second);
+    }
     ex.send_response();
 }
 
@@ -324,38 +360,6 @@ static http_request normalize_request(http_exchange &ex) {
     }
 
     return r;
-}
-
-// TODO: maybe<> and maybe_if<> would work well here once chip has time
-static std::pair<bool, std::string> get_jsonp(http_exchange &ex) {
-    auto params = ex.get_uri().query_part();
-    auto i = params.find("callback");
-    if (i == params.end()) {
-        return std::make_pair(false, std::string());
-    }
-    return std::make_pair(true, i->second);
-}
-
-static void make_jsonp_response(http_exchange &ex, const std::string &callback) {
-    std::string content_type = ex.resp.get("Content-Type");
-    std::stringstream ss;
-    if (content_type.find("json") != std::string::npos) {
-        // wrap response in JSONP
-        ss << callback << "(" << ex.resp.body << ");\n";
-    } else {
-        std::string msg = ex.resp.get("Warning");
-        if (msg.empty()) {
-            msg = ex.resp.reason();
-        }
-        json status{
-            {"status", static_cast<json_int_t>(ex.resp.status_code)},
-            {"reason", msg}
-        };
-        ss << callback << "(" << status << ");\n";
-    }
-    ex.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
-    // must return valid javascript or websites that include this JSONP call will break
-    ex.resp.status_code = 200;
 }
 
 static void perform_proxy(http_exchange &ex, credit_client &cc, backend_pool &bp) {
@@ -407,8 +411,9 @@ static void perform_proxy(http_exchange &ex, credit_client &cc, backend_pool &bp
                 if (nr == 0) { throw response_read_error(); }
             }
 
-            if ((ex.resp.http_version == "HTTP/1.0" && ex.resp.get("Connection") == "Keep-Alive") ||
-                    ex.resp.get("Connection") != "close")
+            // TODO: this would be a useful general function on http_request
+            if ((ex.resp.version == http_1_0 && boost::iequals(ex.resp.get("Connection"), "Keep-Alive")) ||
+                    !boost::iequals(ex.resp.get("Connection"), "close"))
             {
                 // try to keep connection persistent by returning it to the pool
                 cs.done();

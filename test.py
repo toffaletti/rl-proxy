@@ -45,6 +45,15 @@ class TestProxy(unittest.TestCase):
                     continue
                 raise
 
+    def test_01_credit_jsonp(self):
+        self.conn = httplib.HTTPConnection('localhost', PROXY_PORT)
+        self.conn.request('GET', '/credit.json?callback=foo')
+        r = self.conn.getresponse()
+        self.assertEqual(200, r.status)
+        body = r.read()
+        self.assertTrue(body.startswith("foo("))
+
+
 if __name__ == '__main__':
     runner = unittest.TextTestRunner(verbosity=2)
     unittest.main(testRunner=runner)
