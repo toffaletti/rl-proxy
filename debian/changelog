@@ -1,3 +1,9 @@
+ub-rlproxy (0.0.7-1) lucid; urgency=low
+
+  * allow credit.json to be called as jsonp
+
+ -- Jason Toffaletti <jason@topsy.com>  Tue, 13 Nov 2012 12:11:39 -0800
+
 ub-rlproxy (0.0.6-1) lucid; urgency=low
 
   * fix uninitialized variable bug in credit limit check for grandfathered
