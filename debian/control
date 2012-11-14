@@ -1,7 +1,7 @@
 Source: ub-rlproxy
 Priority: extra
 Maintainer: Topsy Ops <ops@topsy.com>
-Build-Depends: debhelper (>= 7), libboost1.51-all-dev (>= 1.51.0), libc-ares-dev (>= 1.7.0), cmake (>= 2.8.0), g++-4.7 (>= 4.7.0), ragel (>= 6.5), libssl-dev (>=0.9.8), ub-python2.7 (>= 2.7-4), libcloog-ppl0 (>= 0.15.11), git-core (>= 1.7.0.4), libjansson-dev (>= 2.3.1)
+Build-Depends: debhelper (>= 7), libboost1.51-all-dev (>= 1.51.0), libc-ares-dev (>= 1.7.0), cmake (>= 2.8.0), g++-4.7 (>= 4.7.0), ragel (>= 6.5), libssl-dev (>=0.9.8), ub-python2.7 (>= 2.7-4), libcloog-ppl0 (>= 0.15.11), git-core (>= 1.7.0.4), libjansson-dev (>= 2.3.1), libboost-regex1.51-dev (>= 1.51.0)
 Standards-Version: 3.8.3
 Section: misc
 Homepage: http://topsy.com

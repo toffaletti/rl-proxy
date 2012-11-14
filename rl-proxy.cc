@@ -1,6 +1,6 @@
 #include <netdb.h>
 #include <memory>
-#include <unordered_set>
+#include <unordered_map>
 
 #include "ten/app.hh"
 #include "ten/buffer.hh"
@@ -10,6 +10,7 @@
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
+#include <boost/regex.hpp> // libstdc++-4.7 regex isn't ready yet
 
 #include "keygen.hh"
 #include "credit-client.hh"
@@ -139,7 +140,7 @@ static http_response resp_out_of_credits{503,
 static proxy_config conf;
 static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
-static std::unordered_set<std::string> grandfather_keys;
+static std::unordered_map<std::string, uint64_t> grandfather_keys;
 
 class log_request_t {
     http_exchange &_ex;
@@ -239,19 +240,22 @@ static apikey_state credit_check(http_exchange &ex,
         key.data.credits = conf.credit_limit;
     } else {
         // check grandfathered keys
-        if (grandfather_keys.count(rawkey)) {
-            value = 0;
-            return valid;
-        }
-        if (!keng.verify(rawkey, key)) {
+        auto it = grandfather_keys.find(rawkey);
+        if (it != grandfather_keys.end()) {
+            db = "old";
+            value = 1;
+            std::hash<std::string> h;
+            ckey = h(rawkey);
+            key.data.credits = it->second;
+        } else if (!keng.verify(rawkey, key)) {
             // report invalid key to caller
             // so we can send an error code back to the client
             // but not before deducting a credit from their ip
             state = invalid;
             if (value == 0) value = 1; // force deducting for invalid keys
-            LOG(WARNING) << "invalid apikey: " << rawkey << "\n";
+            LOG(WARNING) << "invalid apikey: |" << rawkey << "|\n";
         } else {
-            LOG(INFO) << "key data: " << key.data << "\n";
+            LOG(INFO) << "apikey: " << rawkey << " data: " << key.data << "\n";
             // TODO: org only db
             db = "app";
             uint64_t org_id = key.data.org_id;
@@ -309,11 +313,11 @@ static void credit_request(http_exchange &ex, credit_client &cc) {
 
     ex.resp = http_response{200};
     add_rate_limit_headers(ex.resp, key.data.credits,
-        value > key.data.credits ? 0 : (key.data.credits - value));
+        value > key.data.credits ? 0 : key.data.credits);
 
     json_int_t credit_limit = key.data.credits;
     json_int_t credits_remaining = 
-        (value > key.data.credits ? 0 : (key.data.credits - value));
+        (value > key.data.credits ? 0 : key.data.credits);
     json response{
         {"reset", to_time_t(reset_time)},
         {"limit", credit_limit},
@@ -522,13 +526,30 @@ int main(int argc, char *argv[]) {
     }
 
     if (!conf.grandfather_file.empty()) {
+        // TODO: use std::regex once libstdc++ has fully implemented it
+        using namespace boost;
+        regex key_line_re(
+                "^[a-zA-Z0-9]+$");
+        regex key_limit_line_re(
+                "^([a-zA-Z0-9]+)[\\ \\t]+([0-9]+)$");
+
         std::ifstream gf(conf.grandfather_file);
         if (gf.is_open()) {
             std::string line;
             while (std::getline(gf, line)) {
                 if (line.empty() || line[0] == '#') continue;
-                VLOG(2) << "adding grandfather key: " << line;
-                grandfather_keys.insert(line);
+                match_results<std::string::const_iterator> result;
+                if (regex_match(line, key_line_re)) {
+                    VLOG(2) << "adding grandfather key: " << line;
+                    // unlimited
+                    grandfather_keys.insert(std::make_pair(line, (~0)));
+                } else if (regex_match(line, result, key_limit_line_re)) {
+                    uint64_t limit = boost::lexical_cast<uint64_t>(result[2]);
+                    VLOG(2) << "adding grandfather key: " << result[1] << " " << limit;
+                    grandfather_keys.insert(std::make_pair(result[1], limit));
+                } else {
+                    LOG(ERROR) << "skipping invalid line: " << line;
+                }
             }
         } else {
             LOG(ERROR) << "Could not open " << conf.grandfather_file;

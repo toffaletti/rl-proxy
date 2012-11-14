@@ -6,7 +6,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/libten/cmake/ten.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/libten/cmake/version.cmake)
 
 add_executable(rl-proxy rl-proxy.cc)
-target_link_libraries(rl-proxy ten boost_program_options jansson)
+target_link_libraries(rl-proxy ten boost_program_options jansson boost_regex)
 
 add_executable(rl-keygen rl-keygen.cc)
 target_link_libraries(rl-keygen ten boost_program_options)
