@@ -1,3 +1,10 @@
+ub-rlproxy (0.0.8-1) lucid; urgency=low
+
+  * allow grandfathered keys with credit limits
+  * fix error in credit.json remaining reporting
+
+ -- Jason Toffaletti <jason@topsy.com>  Wed, 14 Nov 2012 14:47:15 -0800
+
 ub-rlproxy (0.0.7-1) lucid; urgency=low
 
   * allow credit.json to be called as jsonp
