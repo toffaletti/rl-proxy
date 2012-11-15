@@ -41,7 +41,7 @@ class TestProxy(unittest.TestCase):
             f.write('AAAA\n')
             f.write('AAAB 1\n')
         cls.credit_proc = Popen([
-            'valgrind', '--log-file=rlproxy_valgrind.log',
+            'valgrind', '--log-file=creditserver_valgrind.log',
             './credit-server',
             '--port', str(CREDIT_PORT),
             '--reset-duration', '00:00:10',
