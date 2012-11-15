@@ -6,10 +6,7 @@ import os
 
 import unittest
 from subprocess import Popen, call, check_call, PIPE
-from urllib import urlencode
 import signal
-import httplib
-import socket
 import time
 import idea
 import json
@@ -17,6 +14,7 @@ import threading
 from BaseHTTPServer import HTTPServer
 from BaseHTTPServer import BaseHTTPRequestHandler
 import rlkeygen
+from http import HttpClient
 
 PROXY_PORT=12380
 CREDIT_PORT=11170
@@ -62,6 +60,7 @@ class TestProxy(unittest.TestCase):
         httpd_thread = threading.Thread(target=serve_http, args=(httpd,))
         httpd_thread.daemon = True
         httpd_thread.start()
+        cls.http = HttpClient('localhost', PROXY_PORT)
 
     @classmethod
     def tearDownClass(cls):
@@ -79,66 +78,45 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(0, meta['credits'])
         self.assertEqual(None, meta['expires'])
 
-    def test_00http(self):
-        while True:
-            try:
-                self.conn = httplib.HTTPConnection('localhost', PROXY_PORT)
-                self.conn.request('GET', '/credit.json')
-                r = self.conn.getresponse()
-                self.assertEqual(200, r.status)
-                return
-            except socket.error, e:
-                if e.errno == 111:
-                    time.sleep(1)
-                    continue
-                raise
+    def test_00_credit_json(self):
+        r, body = self.http.get('/credit.json')
+        self.assertEqual(200, r.status)
 
     def test_01_credit_jsonp(self):
-        self.conn = httplib.HTTPConnection('localhost', PROXY_PORT)
-        self.conn.request('GET', '/credit.json?callback=foo')
-        r = self.conn.getresponse()
+        r, body = self.http.get('/credit.json', callback='foo')
         self.assertEqual(200, r.status)
-        body = r.read()
         self.assertTrue(body.startswith("foo("))
 
-    def test_02_test_credit_deduction_no_key(self):
-        self.conn = httplib.HTTPConnection('localhost', PROXY_PORT)
-
+    def test_02_credit_deduction_no_key(self):
         for remaining in ['2', '1', '0']:
-            self.conn.request('GET', '/test.json')
-            r = self.conn.getresponse()
+            r, body = self.http.get('/test.json')
             self.assertEqual(200, r.status)
             self.assertEqual(remaining,
                     r.getheader('x-ratelimit-remaining', 'bad'))
 
-        self.conn.request('GET', '/test.json')
-        r = self.conn.getresponse()
+        r, body = self.http.get('/test.json')
         self.assertEqual(503, r.status)
         reset_time = float(r.getheader('x-ratelimit-reset', 'bad'))
         sleep = reset_time - time.time()
         self.assertTrue(sleep > 0)
         time.sleep(sleep + 1)
 
-        self.conn.request('GET', '/test.json')
-        r = self.conn.getresponse()
+        r, body = self.http.get('/test.json')
         self.assertEqual(200, r.status)
 
-    def test_03_test_credit_deduction_grandfather_unlimited_key(self):
-        self.conn = httplib.HTTPConnection('localhost', PROXY_PORT)
+    def test_credit_deduction_grandfather_unlimited_key(self):
 
         for remaining in ['16777215', '16777215']:
-            self.conn.request('GET', '/test.json?apikey=AAAA')
-            r = self.conn.getresponse()
+            r, body = self.http.get('/test.json', apikey='AAAA')
             self.assertEqual(200, r.status)
             self.assertEqual(remaining,
                     r.getheader('x-ratelimit-remaining', 'bad'))
         # check credit.json
-        self.conn.request('GET', '/credit.json?apikey=AAAA')
-        r = self.conn.getresponse()
+        r, body = self.http.get('/credit.json', apikey='AAAA')
         self.assertEqual(200, r.status)
         self.assertEqual('16777215',
                 r.getheader('x-ratelimit-remaining', 'bad'))
-        js = json.loads(r.read())
+        js = json.loads(body)
         self.assertEqual(16777215,
                 js['response']['remaining'])
         self.assertEqual('16777215',
@@ -146,16 +124,13 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(16777215,
                 js['response']['limit'])
 
-    def test_04_test_credit_deduction_grandfather_limited_key(self):
-        self.conn = httplib.HTTPConnection('localhost', PROXY_PORT)
-
+    def test_credit_deduction_grandfather_limited_key(self):
         # check credit.json
-        self.conn.request('GET', '/credit.json?apikey=AAAB')
-        r = self.conn.getresponse()
+        r, body = self.http.get('/credit.json', apikey='AAAB')
         self.assertEqual(200, r.status)
         self.assertEqual('1',
                 r.getheader('x-ratelimit-remaining', 'bad'))
-        js = json.loads(r.read())
+        js = json.loads(body)
         self.assertEqual(1,
                 js['response']['remaining'])
         self.assertEqual('1',
@@ -164,49 +139,41 @@ class TestProxy(unittest.TestCase):
                 js['response']['limit'])
 
         for remaining in ['0']:
-            self.conn.request('GET', '/test.json?apikey=AAAB')
-            r = self.conn.getresponse()
+            r, body = self.http.get('/test.json', apikey='AAAB')
             self.assertEqual(200, r.status)
             self.assertEqual(remaining,
                     r.getheader('x-ratelimit-remaining', 'bad'))
 
-        self.conn.request('GET', '/test.json?apikey=AAAB')
-        r = self.conn.getresponse()
+        r, body = self.http.get('/test.json', apikey='AAAB')
         self.assertEqual(503, r.status)
         reset_time = float(r.getheader('x-ratelimit-reset', 'bad'))
         sleep = reset_time - time.time()
         self.assertTrue(sleep > 0)
         time.sleep(sleep + 1)
 
-        self.conn.request('GET', '/test.json?apikey=AAAB')
-        r = self.conn.getresponse()
+        r, body = self.http.get('/test.json', apikey='AAAB')
         self.assertEqual(200, r.status)
 
-    def test_05_test_credit_deduction_generated_key(self):
-        self.conn = httplib.HTTPConnection('localhost', PROXY_PORT)
-
+    def test_credit_deduction_generated_key(self):
         # this key will use the default credit limit
         apikey = rlkeygen.key_generate(SECRET, 1, 1, 0)
-        self.conn.request('GET', '/test.json?apikey=%s' % apikey)
-        r = self.conn.getresponse()
+        r, body = self.http.get('/test.json', apikey=apikey)
         self.assertEqual(200, r.status)
         self.assertEqual('2',
                 r.getheader('x-ratelimit-remaining', 'bad'))
 
         # this key will have a credit limit of 2
         apikey = rlkeygen.key_generate(SECRET, 1, 1, 2)
-        self.conn.request('GET', '/test.json?apikey=%s' % apikey)
-        r = self.conn.getresponse()
+        r, body = self.http.get('/test.json', apikey=apikey)
         self.assertEqual(200, r.status)
         self.assertEqual('0',
                 r.getheader('x-ratelimit-remaining', 'bad'))
         reset_time = float(r.getheader('x-ratelimit-reset', 'bad'))
-        self.conn.request('GET', '/credit.json?apikey=%s' % apikey)
-        r = self.conn.getresponse()
+        r, body = self.http.get('/credit.json', apikey=apikey)
         self.assertEqual(200, r.status)
         self.assertEqual(reset_time,
                 float(r.getheader('x-ratelimit-reset', 'bad')))
-        js = json.loads(r.read())
+        js = json.loads(body)
         self.assertEqual('0',
                 r.getheader('x-ratelimit-remaining', 'bad'))
         self.assertEqual(0, js['response']['remaining'])
