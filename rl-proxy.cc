@@ -246,9 +246,7 @@ static apikey_state credit_check(http_exchange &ex,
         if (it != grandfather_keys.end()) {
             db = "old";
             if (it->second == (uint64_t)~0) {
-                value = 0;
-            } else {
-                value = 1;
+                value = 0; // never increment credits for unlimited keys
             }
             std::hash<std::string> h;
             ckey = h(rawkey);
@@ -285,6 +283,7 @@ static apikey_state credit_check(http_exchange &ex,
             }
         }
     }
+    // TODO: returning the count in value is really confusing
     cc->query(db, ckey, value);
     return state;
 }
@@ -319,11 +318,11 @@ static void credit_request(http_exchange &ex, std::shared_ptr<credit_client> &cc
 
     ex.resp = http_response{200};
     add_rate_limit_headers(ex.resp, key.data.credits,
-        value > key.data.credits ? 0 : key.data.credits);
+        value > key.data.credits ? 0 : key.data.credits - value);
 
     json_int_t credit_limit = key.data.credits;
     json_int_t credits_remaining = 
-        (value > key.data.credits ? 0 : key.data.credits);
+        (value > key.data.credits ? 0 : key.data.credits - value);
     json response{
         {"reset", to_time_t(reset_time)},
         {"limit", credit_limit},
@@ -394,7 +393,7 @@ static void perform_proxy(http_exchange &ex,
     if (value > key.data.credits) {
         ex.resp = resp_out_of_credits;
         add_rate_limit_headers(ex.resp, key.data.credits,
-                value > key.data.credits ? 0 : key.data.credits);
+                value > key.data.credits ? 0 : key.data.credits - value);
         return;
     }
 
@@ -437,7 +436,7 @@ static void perform_proxy(http_exchange &ex,
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
             add_rate_limit_headers(ex.resp, key.data.credits,
-                value > key.data.credits ? 0 : (key.data.credits - value));
+                value > key.data.credits ? 0 : key.data.credits - value);
             return;
         } catch (request_send_error &e) {
             PLOG(ERROR) << "request send error: " << log_r(ex);

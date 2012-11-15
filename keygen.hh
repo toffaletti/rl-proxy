@@ -30,11 +30,15 @@ struct meta_t {
 } __attribute__((packed));
 
 std::ostream &operator <<(std::ostream &o, const meta_t &m) {
-    struct tm tm = {};
-    localtime_r((time_t *)&m.expires, &tm);
-    char buf[128];
-    strftime(buf, sizeof(buf), "%c", &tm);
-    o << "{org_id:" << m.org_id << ",app_id:" << m.app_id << ",expires:" << buf;
+    char expires[128];
+    if (m.expires > 0) {
+        struct tm tm = {};
+        localtime_r((time_t *)&m.expires, &tm);
+        strftime(expires, sizeof(expires), "%c", &tm);
+    } else {
+        strcpy(expires, "never");
+    }
+    o << "{org_id:" << m.org_id << ",app_id:" << m.app_id << ",expires:" << expires;
     o << ",flags:" << m.flags << ",credits:" << m.credits << "}";
     return o;
 }
