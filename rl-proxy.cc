@@ -225,7 +225,9 @@ static void log_request(http_exchange &ex) {
 }
 
 static apikey_state credit_check(http_exchange &ex,
-    credit_client &cc, apikey &key, uint64_t &value)
+    std::shared_ptr<credit_client> &cc,
+    apikey &key,
+    uint64_t &value)
 {
     using namespace boost::gregorian;
     using namespace boost::posix_time;
@@ -243,7 +245,11 @@ static apikey_state credit_check(http_exchange &ex,
         auto it = grandfather_keys.find(rawkey);
         if (it != grandfather_keys.end()) {
             db = "old";
-            value = 1;
+            if (it->second == (uint64_t)~0) {
+                value = 0;
+            } else {
+                value = 1;
+            }
             std::hash<std::string> h;
             ckey = h(rawkey);
             key.data.credits = it->second;
@@ -279,11 +285,11 @@ static apikey_state credit_check(http_exchange &ex,
             }
         }
     }
-    cc.query(db, ckey, value);
+    cc->query(db, ckey, value);
     return state;
 }
 
-static void credit_request(http_exchange &ex, credit_client &cc) {
+static void credit_request(http_exchange &ex, std::shared_ptr<credit_client> &cc) {
     uint64_t value = 0; // value of 0 will just return how many credits are used
     apikey key = {};
     switch (credit_check(ex, cc, key, value)) {
@@ -366,7 +372,10 @@ static http_request normalize_request(http_exchange &ex) {
     return r;
 }
 
-static void perform_proxy(http_exchange &ex, credit_client &cc, backend_pool &bp) {
+static void perform_proxy(http_exchange &ex,
+        std::shared_ptr<credit_client> &cc,
+        std::shared_ptr<backend_pool> &bp)
+{
     apikey key = {};
     uint64_t value = 1;
     switch (credit_check(ex, cc, key, value)) {
@@ -384,11 +393,13 @@ static void perform_proxy(http_exchange &ex, credit_client &cc, backend_pool &bp
 
     if (value > key.data.credits) {
         ex.resp = resp_out_of_credits;
+        add_rate_limit_headers(ex.resp, key.data.credits,
+                value > key.data.credits ? 0 : key.data.credits);
         return;
     }
 
     for (;;) {
-        backend_pool::scoped_resource cs{bp};
+        backend_pool::scoped_resource cs{*bp};
         try {
             http_request r = normalize_request(ex);
 
@@ -438,7 +449,10 @@ static void perform_proxy(http_exchange &ex, credit_client &cc, backend_pool &bp
     }
 }
 
-static void proxy_request(http_exchange &ex, credit_client &cc, backend_pool &bp) {
+static void proxy_request(http_exchange &ex,
+        std::shared_ptr<credit_client> &cc,
+        std::shared_ptr<backend_pool> &bp)
+{
     try {
         perform_proxy(ex, cc, bp);
         auto jp = get_jsonp(ex);
@@ -463,14 +477,14 @@ static void proxy_request(http_exchange &ex, credit_client &cc, backend_pool &bp
 static void startup() {
     using namespace std::placeholders;
     try {
-        backend_pool bp{conf};
+        auto bp = std::make_shared<backend_pool>(conf);
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
-        credit_client cc(conf.credit_server_host, conf.credit_server_port);
+        auto cc = std::make_shared<credit_client>(conf.credit_server_host, conf.credit_server_port);
         std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024, SEC2MS(5));
         proxy->set_log_callback(log_request);
-        proxy->add_route("/credit.json", std::bind(credit_request, _1, std::ref(cc)));
-        proxy->add_route("*", std::bind(proxy_request, _1, std::ref(cc), std::ref(bp)));
+        proxy->add_route("/credit.json", std::bind(credit_request, _1, cc));
+        proxy->add_route("*", std::bind(proxy_request, _1, cc, bp));
         proxy->serve(conf.listen_address, conf.listen_port);
     } catch (std::exception &e) {
         LOG(ERROR) << e.what();
