@@ -1,3 +1,12 @@
+ub-rlproxy (0.0.9-1) lucid; urgency=low
+
+  * add ratelimit headers when credit limit has been reached.
+  * fix shutdown crash bug.
+  * fix odd bug where ctypes randomly wasn't converting strings properly.
+  * really fix bug in remaining reporting this time.
+
+ -- Jason Toffaletti <jason@topsy.com>  Thu, 15 Nov 2012 10:46:19 -0800
+
 ub-rlproxy (0.0.8-1) lucid; urgency=low
 
   * allow grandfathered keys with credit limits
