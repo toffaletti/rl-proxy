@@ -92,7 +92,7 @@ public:
     {
         host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
         if (backend_addrs.empty()) {
-            throw errorx("could not resolve backend host: %s", conf.backend_host.c_str());
+            throw errorx{"could not resolve backend host: %s", conf.backend_host.c_str()};
         }
     }
 
@@ -137,6 +137,13 @@ static http_response resp_out_of_credits{503,
     "Connection", "close",
     "Content-Length", "0")
 };
+static http_response resp_apikey_required{503,
+    http_headers(
+    "Warning", "Apikey required",
+    "Connection", "close",
+    "Content-Length", "0")
+};
+
 static proxy_config conf;
 static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
@@ -390,7 +397,13 @@ static void perform_proxy(http_exchange &ex,
             return;
     }
 
-    if (value > key.data.credits) {
+    if (key.data.credits == 0 &&
+            conf.credit_limit == 0 &&
+            get_request_apikey(ex).empty())
+    {
+        ex.resp = resp_apikey_required;
+        return;
+    } else if (value > key.data.credits) {
         ex.resp = resp_out_of_credits;
         add_rate_limit_headers(ex.resp, key.data.credits,
                 value > key.data.credits ? 0 : key.data.credits - value);
