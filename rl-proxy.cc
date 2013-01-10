@@ -378,7 +378,42 @@ static http_request normalize_request(http_exchange &ex) {
     return r;
 }
 
-static void perform_proxy(http_exchange &ex,
+static void do_proxy(http_request &r, http_exchange &ex,
+        backend_pool::scoped_resource &cs)
+{
+    std::string data = r.data();
+    if (!ex.req.body.empty()) {
+        data += ex.req.body;
+    }
+    ssize_t nw = cs->send(data.data(), data.size(), SEC2MS(5));
+    if (nw <= 0) { throw request_send_error(); }
+
+    http_parser parser;
+    ex.resp = http_response{&r};
+    ex.resp.parser_init(&parser);
+    buffer buf(4*1024);
+    for (;;) {
+        buf.reserve(4*1024);
+        ssize_t nr = cs->recv(buf.back(), buf.available(), SEC2MS(5));
+        if (nr < 0) { throw response_read_error(); }
+        buf.commit(nr);
+        size_t len = buf.size();
+        ex.resp.parse(&parser, buf.front(), len);
+        buf.remove(len);
+        if (ex.resp.complete) break;
+        if (nr == 0) { throw response_read_error(); }
+    }
+
+    // TODO: this would be a useful general function on http_request
+    if ((ex.resp.version == http_1_0 && boost::iequals(ex.resp.get("Connection"), "Keep-Alive")) ||
+            !boost::iequals(ex.resp.get("Connection"), "close"))
+    {
+        // try to keep connection persistent by returning it to the pool
+        cs.done();
+    }
+}
+
+static void proxy_if_credits(http_exchange &ex,
         std::shared_ptr<credit_client> &cc,
         std::shared_ptr<backend_pool> &bp)
 {
@@ -414,38 +449,7 @@ static void perform_proxy(http_exchange &ex,
         backend_pool::scoped_resource cs{*bp};
         try {
             http_request r = normalize_request(ex);
-
-            std::string data = r.data();
-            if (!ex.req.body.empty()) {
-                data += ex.req.body;
-            }
-            ssize_t nw = cs->send(data.data(), data.size(), SEC2MS(5));
-            if (nw <= 0) { throw request_send_error(); }
-
-            http_parser parser;
-            ex.resp = http_response{&r};
-            ex.resp.parser_init(&parser);
-            buffer buf(4*1024);
-            for (;;) {
-                buf.reserve(4*1024);
-                ssize_t nr = cs->recv(buf.back(), buf.available(), SEC2MS(5));
-                if (nr < 0) { throw response_read_error(); }
-                buf.commit(nr);
-                size_t len = buf.size();
-                ex.resp.parse(&parser, buf.front(), len);
-                buf.remove(len);
-                if (ex.resp.complete) break;
-                if (nr == 0) { throw response_read_error(); }
-            }
-
-            // TODO: this would be a useful general function on http_request
-            if ((ex.resp.version == http_1_0 && boost::iequals(ex.resp.get("Connection"), "Keep-Alive")) ||
-                    !boost::iequals(ex.resp.get("Connection"), "close"))
-            {
-                // try to keep connection persistent by returning it to the pool
-                cs.done();
-            }
-
+            do_proxy(r, ex, cs);
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
             add_rate_limit_headers(ex.resp, key.data.credits,
@@ -466,7 +470,7 @@ static void proxy_request(http_exchange &ex,
         std::shared_ptr<backend_pool> &bp)
 {
     try {
-        perform_proxy(ex, cc, bp);
+        proxy_if_credits(ex, cc, bp);
         auto jp = get_jsonp(ex);
         if (jp.first) { // is this jsonp?
             make_jsonp_response(ex, jp.second);
@@ -486,6 +490,38 @@ static void proxy_request(http_exchange &ex,
     }
 }
 
+static void pass_through(http_exchange &ex,
+        std::shared_ptr<backend_pool> &bp)
+{
+    try {
+        for (;;) {
+            try {
+                backend_pool::scoped_resource cs{*bp};
+                do_proxy(ex.req, ex, cs);
+                // HTTP/1.1 requires content-length
+                ex.resp.set("Content-Length", ex.resp.body.size());
+                ssize_t nw = ex.send_response();
+                if (nw <= 0) {
+                    PLOG(ERROR) << "response send error: " << log_r(ex);
+                }
+                return;
+            } catch (request_send_error &e) {
+                PLOG(ERROR) << "request send error: " << log_r(ex);
+                continue;
+            } catch (response_read_error &e) {
+                PLOG(ERROR) << "response read error: " << log_r(ex);
+                continue;
+            }
+        }
+    } catch (backend_connect_error &e) {
+        PLOG(ERROR) << "request connect error " << log_r(ex);
+        ex.resp = resp_connect_error_503;
+        ex.send_response();
+    } catch (std::exception &e) {
+        LOG(ERROR) << "exception error: " << log_r(ex) << " : " << e.what();
+    }
+}
+
 static void startup() {
     using namespace std::placeholders;
     try {
@@ -495,6 +531,7 @@ static void startup() {
         auto cc = std::make_shared<credit_client>(conf.credit_server_host, conf.credit_server_port);
         std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024, SEC2MS(5));
         proxy->set_log_callback(log_request);
+        proxy->add_route("/", std::bind(pass_through, _1, bp));
         proxy->add_route("/credit.json", std::bind(credit_request, _1, cc));
         proxy->add_route("*", std::bind(proxy_request, _1, cc, bp));
         proxy->serve(conf.listen_address, conf.listen_port);

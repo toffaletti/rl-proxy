@@ -20,6 +20,9 @@ PROXY_PORT=12380
 CREDIT_PORT=11170
 SECRET='1234'
 
+class MyHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
 class RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -30,7 +33,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 def serve_http(httpd):
     httpd.serve_forever()
 
-class TestProxy(unittest.TestCase):
+class TestProxyMixin:
 
     @classmethod
     def setUpClass(cls):
@@ -53,13 +56,13 @@ class TestProxy(unittest.TestCase):
             '--backend', 'localhost:12480',
             '--reset-duration', '00:00:10',
             '--credit-server', 'localhost:%d' % CREDIT_PORT,
-            '--credit-limit', '3',
+            '--credit-limit', cls.default_credit_limit,
             '--grandfather', 'grandfathered_test_keys',
+            '--glog-v', '1',
             ])
-        httpd = HTTPServer(('127.0.0.1', 12480), RequestHandler)
-        httpd_thread = threading.Thread(target=serve_http, args=(httpd,))
-        httpd_thread.daemon = True
-        httpd_thread.start()
+        cls.httpd = MyHTTPServer(('127.0.0.1', 12480), RequestHandler)
+        cls.httpd_thread = threading.Thread(target=serve_http, args=(cls.httpd,))
+        cls.httpd_thread.start()
         cls.http = HttpClient('localhost', PROXY_PORT)
 
     @classmethod
@@ -68,6 +71,9 @@ class TestProxy(unittest.TestCase):
         cls.proxy_proc.wait()
         cls.credit_proc.send_signal(signal.SIGINT)
         cls.credit_proc.wait()
+        cls.httpd.shutdown()
+        cls.httpd_thread.join()
+        del cls.httpd
 
     def test_00_rlkeygen(self):
         apikey = rlkeygen.key_generate(SECRET, 1, 1, 0)
@@ -77,6 +83,10 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(1, meta['app_id'])
         self.assertEqual(0, meta['credits'])
         self.assertEqual(None, meta['expires'])
+
+    def test_00_root_pass_through(self):
+        r, body = self.http.get('/')
+        self.assertEqual(200, r.status)
 
     def test_00_credit_json(self):
         r, body = self.http.get('/credit.json')
@@ -178,6 +188,46 @@ class TestProxy(unittest.TestCase):
                 r.getheader('x-ratelimit-remaining', 'bad'))
         self.assertEqual(0, js['response']['remaining'])
         self.assertEqual(2, js['response']['limit'])
+
+
+class TestProxy(TestProxyMixin, unittest.TestCase):
+    default_credit_limit = '3'
+
+
+class TestProxyKeyRequired(TestProxyMixin, unittest.TestCase):
+    default_credit_limit = '0'
+
+    def test_02_credit_deduction_no_key(self):
+        r, body = self.http.get('/test.json')
+        self.assertEqual(503, r.status)
+        self.assertEqual('Apikey required', r.getheader('Warning', ''))
+
+    def test_credit_deduction_generated_key(self):
+        # credit limit of 3 inside the key
+        apikey = rlkeygen.key_generate(SECRET, 1, 1, 3)
+        r, body = self.http.get('/test.json', apikey=apikey)
+        self.assertEqual(200, r.status)
+        self.assertEqual('2',
+                r.getheader('x-ratelimit-remaining', 'bad'))
+
+        # this key will have a credit limit of 2
+        apikey = rlkeygen.key_generate(SECRET, 1, 1, 2)
+        r, body = self.http.get('/test.json', apikey=apikey)
+        self.assertEqual(200, r.status)
+        self.assertEqual('0',
+                r.getheader('x-ratelimit-remaining', 'bad'))
+        reset_time = float(r.getheader('x-ratelimit-reset', 'bad'))
+        r, body = self.http.get('/credit.json', apikey=apikey)
+        self.assertEqual(200, r.status)
+        self.assertEqual(reset_time,
+                float(r.getheader('x-ratelimit-reset', 'bad')))
+        js = json.loads(body)
+        self.assertEqual('0',
+                r.getheader('x-ratelimit-remaining', 'bad'))
+        self.assertEqual(0, js['response']['remaining'])
+        self.assertEqual(2, js['response']['limit'])
+
+
 
 if __name__ == '__main__':
     runner = unittest.TextTestRunner(verbosity=2)
