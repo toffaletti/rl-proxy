@@ -5,8 +5,8 @@
 #include "ten/app.hh"
 #include "ten/buffer.hh"
 #include "ten/http/server.hh"
+#include "ten/http/client.hh"
 #include "ten/json.hh"
-#include "ten/shared_pool.hh"
 #include <boost/lexical_cast.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
@@ -43,20 +43,6 @@ struct proxy_config : app_config {
     optional_timeout send_timeout;
 };
 
-static void host2addresses(std::string &host, uint16_t port, std::vector<address> &addrs) {
-    struct addrinfo *results = 0;
-    struct addrinfo *result = 0;
-    int status = getaddrinfo(host.c_str(), NULL, NULL, &results);
-    if (status == 0) {
-        for (result = results; result != NULL; result = result->ai_next) {
-            address addr{result->ai_addr, result->ai_addrlen};
-            addr.port(port);
-            addrs.push_back(addr);
-        }
-    }
-    freeaddrinfo(results);
-}
-
 // TODO: maybe<> and maybe_if<> would work well here once chip has time
 static std::pair<bool, std::string> get_jsonp(http_exchange &ex) {
     auto params = ex.get_uri().query_part();
@@ -88,16 +74,6 @@ static void make_jsonp_response(http_exchange &ex, const std::string &callback) 
     // must return valid javascript or websites that include this JSONP call will break
     ex.resp.status_code = 200;
 }
-
-struct backend_connect_error : std::exception {
-    const char *what() const noexcept override { return "backend connect error"; }
-};
-struct request_send_error : std::exception {
-    const char *what() const noexcept override { return "request send error"; }
-};
-struct response_read_error : std::exception {
-    const char *what() const noexcept override { return "response read error"; }
-};
 
 // globals
 static http_response resp_connect_error_503{503,
@@ -216,35 +192,6 @@ static void log_request(http_exchange &ex) {
             get_request_apikey(ex);
     }
 }
-
-class backend_pool : public shared_pool<netsock> {
-public:
-    backend_pool(proxy_config &conf) :
-        shared_pool<netsock>("backend", std::bind(&backend_pool::new_resource, this))
-    {
-        host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
-        if (backend_addrs.empty()) {
-            throw errorx{"could not resolve backend host: %s", conf.backend_host.c_str()};
-        }
-    }
-
-private:
-    std::vector<address> backend_addrs;
-
-    std::shared_ptr<netsock> new_resource() {
-        std::shared_ptr<netsock> cs{new netsock(AF_INET, SOCK_STREAM)};
-        std::vector<address> addrs = backend_addrs;
-        std::random_shuffle(addrs.begin(), addrs.end());
-        int status = -1;
-        for (std::vector<address>::const_iterator i=addrs.begin(); i!=addrs.end(); ++i) {
-            using namespace std::chrono;
-            status = cs->connect(*i, conf.connect_timeout);
-            if (status == 0) break;
-        }
-        if (status != 0) throw backend_connect_error();
-        return cs;
-    }
-};
 
 static apikey_state credit_check(http_exchange &ex,
     std::shared_ptr<credit_client> &cc,
@@ -394,32 +341,9 @@ static http_request normalize_request(http_exchange &ex) {
 }
 
 static void do_proxy(http_request &r, http_exchange &ex,
-        backend_pool::scoped_resource &cs)
+        http_pool::scoped_resource &cs)
 {
-    using namespace std::chrono;
-    std::string data = r.data();
-    if (!ex.req.body.empty()) {
-        data += ex.req.body;
-    }
-    ssize_t nw = cs->send(data.data(), data.size(), 0, conf.send_timeout);
-    if (nw <= 0) { throw request_send_error(); }
-
-    http_parser parser;
-    ex.resp = http_response{&r};
-    ex.resp.parser_init(&parser);
-    buffer buf(4*1024);
-    for (;;) {
-        buf.reserve(4*1024);
-        ssize_t nr = cs->recv(buf.back(), buf.available(), 0, conf.recv_timeout);
-        if (nr < 0) { throw response_read_error(); }
-        buf.commit(nr);
-        size_t len = buf.size();
-        ex.resp.parse(&parser, buf.front(), len);
-        buf.remove(len);
-        if (ex.resp.complete) break;
-        if (nr == 0) { throw response_read_error(); }
-    }
-
+    ex.resp = cs->perform(r, conf.send_timeout);
     if (!ex.will_close()) {
         // try to keep connection persistent by returning it to the pool
         cs.done();
@@ -428,7 +352,7 @@ static void do_proxy(http_request &r, http_exchange &ex,
 
 static void proxy_if_credits(http_exchange &ex,
         std::shared_ptr<credit_client> &cc,
-        std::shared_ptr<backend_pool> &bp)
+        std::shared_ptr<http_pool> &pool)
 {
     apikey key = {};
     uint64_t value = 1;
@@ -459,7 +383,7 @@ static void proxy_if_credits(http_exchange &ex,
     }
 
     for (;;) {
-        backend_pool::scoped_resource cs{*bp};
+        http_pool::scoped_resource cs{*pool};
         try {
             http_request r = normalize_request(ex);
             do_proxy(r, ex, cs);
@@ -468,11 +392,10 @@ static void proxy_if_credits(http_exchange &ex,
             add_rate_limit_headers(ex.resp, key.data.credits,
                 value > key.data.credits ? 0 : key.data.credits - value);
             return;
-        } catch (request_send_error &e) {
-            PLOG(ERROR) << "request send error: " << log_r(ex);
-            continue;
-        } catch (response_read_error &e) {
-            PLOG(ERROR) << "response read error: " << log_r(ex);
+        } catch (http_dial_error &e) {
+            throw;
+        } catch (http_error &e) {
+            LOG(ERROR) << "http error (" << e.what() << ") " << log_r(ex);
             continue;
         }
     }
@@ -480,10 +403,10 @@ static void proxy_if_credits(http_exchange &ex,
 
 static void proxy_request(http_exchange &ex,
         std::shared_ptr<credit_client> &cc,
-        std::shared_ptr<backend_pool> &bp)
+        std::shared_ptr<http_pool> &pool)
 {
     try {
-        proxy_if_credits(ex, cc, bp);
+        proxy_if_credits(ex, cc, pool);
         auto jp = get_jsonp(ex);
         if (jp.first) { // is this jsonp?
             make_jsonp_response(ex, jp.second);
@@ -494,8 +417,8 @@ static void proxy_request(http_exchange &ex,
         if (nw <= 0) {
             PLOG(ERROR) << "response send error: " << log_r(ex);
         }
-    } catch (backend_connect_error &e) {
-        PLOG(ERROR) << "request connect error " << log_r(ex);
+    } catch (http_error &e) {
+        LOG(ERROR) << "http error (" << e.what() << ") " << log_r(ex);
         ex.resp = resp_connect_error_503;
         ex.send_response();
     } catch (std::exception &e) {
@@ -504,12 +427,12 @@ static void proxy_request(http_exchange &ex,
 }
 
 static void pass_through(http_exchange &ex,
-        std::shared_ptr<backend_pool> &bp)
+        std::shared_ptr<http_pool> &pool)
 {
     try {
         for (;;) {
             try {
-                backend_pool::scoped_resource cs{*bp};
+                http_pool::scoped_resource cs{*pool};
                 do_proxy(ex.req, ex, cs);
                 // HTTP/1.1 requires content-length
                 ex.resp.set("Content-Length", ex.resp.body.size());
@@ -518,16 +441,15 @@ static void pass_through(http_exchange &ex,
                     PLOG(ERROR) << "response send error: " << log_r(ex);
                 }
                 return;
-            } catch (request_send_error &e) {
-                PLOG(ERROR) << "request send error: " << log_r(ex);
-                continue;
-            } catch (response_read_error &e) {
-                PLOG(ERROR) << "response read error: " << log_r(ex);
+            } catch (http_dial_error &e) {
+                throw;
+            } catch (http_error &e) {
+                LOG(ERROR) << "http error (" << e.what() << ") " << log_r(ex);
                 continue;
             }
         }
-    } catch (backend_connect_error &e) {
-        PLOG(ERROR) << "request connect error " << log_r(ex);
+    } catch (http_dial_error &e) {
+        LOG(ERROR) << "http error (" << e.what() << ") " << log_r(ex);
         ex.resp = resp_connect_error_503;
         ex.send_response();
     } catch (std::exception &e) {
@@ -538,15 +460,15 @@ static void pass_through(http_exchange &ex,
 static void startup() {
     using namespace std::placeholders;
     try {
-        auto bp = std::make_shared<backend_pool>(conf);
+        auto pool = std::make_shared<http_pool>(conf.backend_host, conf.backend_port);
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
         auto cc = std::make_shared<credit_client>(conf.credit_server_host, conf.credit_server_port);
         std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024);
         proxy->set_log_callback(log_request);
-        proxy->add_route("/", std::bind(pass_through, _1, bp));
+        proxy->add_route("/", std::bind(pass_through, _1, pool));
         proxy->add_route("/credit.json", std::bind(credit_request, _1, cc));
-        proxy->add_route("*", std::bind(proxy_request, _1, cc, bp));
+        proxy->add_route("*", std::bind(proxy_request, _1, cc, pool));
         proxy->serve(conf.listen_address, conf.listen_port);
     } catch (std::exception &e) {
         LOG(ERROR) << e.what();
