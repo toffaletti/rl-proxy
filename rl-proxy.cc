@@ -89,9 +89,15 @@ static void make_jsonp_response(http_exchange &ex, const std::string &callback) 
     ex.resp.status_code = 200;
 }
 
-struct backend_connect_error : std::exception {};
-struct request_send_error : std::exception {};
-struct response_read_error : std::exception {};
+struct backend_connect_error : std::exception {
+    const char *what() const noexcept override { return "backend connect error"; }
+};
+struct request_send_error : std::exception {
+    const char *what() const noexcept override { return "request send error"; }
+};
+struct response_read_error : std::exception {
+    const char *what() const noexcept override { return "response read error"; }
+};
 
 // globals
 static http_response resp_connect_error_503{503,
