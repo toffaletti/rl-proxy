@@ -33,6 +33,14 @@ struct proxy_config : app_config {
     boost::posix_time::time_duration reset_duration;
     bool secure_log;
     std::string grandfather_file;
+    // these are for program_options
+    unsigned connect_timeout_seconds;
+    unsigned recv_timeout_seconds;
+    unsigned send_timeout_seconds;
+    // above are converted to these for use
+    optional_timeout connect_timeout;
+    optional_timeout recv_timeout;
+    optional_timeout send_timeout;
 };
 
 static void host2addresses(std::string &host, uint16_t port, std::vector<address> &addrs) {
@@ -84,34 +92,6 @@ static void make_jsonp_response(http_exchange &ex, const std::string &callback) 
 struct backend_connect_error : std::exception {};
 struct request_send_error : std::exception {};
 struct response_read_error : std::exception {};
-
-class backend_pool : public shared_pool<netsock> {
-public:
-    backend_pool(proxy_config &conf) :
-        shared_pool<netsock>("backend", std::bind(&backend_pool::new_resource, this))
-    {
-        host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
-        if (backend_addrs.empty()) {
-            throw errorx{"could not resolve backend host: %s", conf.backend_host.c_str()};
-        }
-    }
-
-private:
-    std::vector<address> backend_addrs;
-
-    std::shared_ptr<netsock> new_resource() {
-        std::shared_ptr<netsock> cs{new netsock(AF_INET, SOCK_STREAM)};
-        std::vector<address> addrs = backend_addrs;
-        std::random_shuffle(addrs.begin(), addrs.end());
-        int status = -1;
-        for (std::vector<address>::const_iterator i=addrs.begin(); i!=addrs.end(); ++i) {
-            status = cs->connect(*i, SEC2MS(10));
-            if (status == 0) break;
-        }
-        if (status != 0) throw backend_connect_error();
-        return cs;
-    }
-};
 
 // globals
 static http_response resp_connect_error_503{503,
@@ -230,6 +210,35 @@ static void log_request(http_exchange &ex) {
             get_request_apikey(ex);
     }
 }
+
+class backend_pool : public shared_pool<netsock> {
+public:
+    backend_pool(proxy_config &conf) :
+        shared_pool<netsock>("backend", std::bind(&backend_pool::new_resource, this))
+    {
+        host2addresses(conf.backend_host, conf.backend_port, backend_addrs);
+        if (backend_addrs.empty()) {
+            throw errorx{"could not resolve backend host: %s", conf.backend_host.c_str()};
+        }
+    }
+
+private:
+    std::vector<address> backend_addrs;
+
+    std::shared_ptr<netsock> new_resource() {
+        std::shared_ptr<netsock> cs{new netsock(AF_INET, SOCK_STREAM)};
+        std::vector<address> addrs = backend_addrs;
+        std::random_shuffle(addrs.begin(), addrs.end());
+        int status = -1;
+        for (std::vector<address>::const_iterator i=addrs.begin(); i!=addrs.end(); ++i) {
+            using namespace std::chrono;
+            status = cs->connect(*i, conf.connect_timeout);
+            if (status == 0) break;
+        }
+        if (status != 0) throw backend_connect_error();
+        return cs;
+    }
+};
 
 static apikey_state credit_check(http_exchange &ex,
     std::shared_ptr<credit_client> &cc,
@@ -381,11 +390,12 @@ static http_request normalize_request(http_exchange &ex) {
 static void do_proxy(http_request &r, http_exchange &ex,
         backend_pool::scoped_resource &cs)
 {
+    using namespace std::chrono;
     std::string data = r.data();
     if (!ex.req.body.empty()) {
         data += ex.req.body;
     }
-    ssize_t nw = cs->send(data.data(), data.size(), SEC2MS(5));
+    ssize_t nw = cs->send(data.data(), data.size(), 0, conf.send_timeout);
     if (nw <= 0) { throw request_send_error(); }
 
     http_parser parser;
@@ -394,7 +404,7 @@ static void do_proxy(http_request &r, http_exchange &ex,
     buffer buf(4*1024);
     for (;;) {
         buf.reserve(4*1024);
-        ssize_t nr = cs->recv(buf.back(), buf.available(), SEC2MS(5));
+        ssize_t nr = cs->recv(buf.back(), buf.available(), 0, conf.recv_timeout);
         if (nr < 0) { throw response_read_error(); }
         buf.commit(nr);
         size_t len = buf.size();
@@ -404,10 +414,7 @@ static void do_proxy(http_request &r, http_exchange &ex,
         if (nr == 0) { throw response_read_error(); }
     }
 
-    // TODO: this would be a useful general function on http_request
-    if ((ex.resp.version == http_1_0 && boost::iequals(ex.resp.get("Connection"), "Keep-Alive")) ||
-            !boost::iequals(ex.resp.get("Connection"), "close"))
-    {
+    if (!ex.will_close()) {
         // try to keep connection persistent by returning it to the pool
         cs.done();
     }
@@ -529,7 +536,7 @@ static void startup() {
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
         auto cc = std::make_shared<credit_client>(conf.credit_server_host, conf.credit_server_port);
-        std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024, SEC2MS(5));
+        std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024);
         proxy->set_log_callback(log_request);
         proxy->add_route("/", std::bind(pass_through, _1, bp));
         proxy->add_route("/credit.json", std::bind(credit_request, _1, cc));
@@ -559,6 +566,12 @@ int main(int argc, char *argv[]) {
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
         ("secure-log", po::value<bool>(&conf.secure_log)->default_value(false), "secure logging format")
         ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
+        ("connect-timeout", po::value<unsigned>(&conf.connect_timeout_seconds)->default_value(10),
+         "socket connection timeout in seconds")
+        ("recv-timeout", po::value<unsigned>(&conf.recv_timeout_seconds)->default_value(5),
+         "socket recv timeout in seconds")
+        ("send-timeout", po::value<unsigned>(&conf.send_timeout_seconds)->default_value(5),
+         "socket send timeout in seconds")
     ;
     app.opts.pdesc.add("backend", -1);
 
@@ -579,7 +592,7 @@ int main(int argc, char *argv[]) {
     }
     keng.secret = conf.secret;
 
-    using namespace boost::posix_time;
+    using boost::posix_time::duration_from_string;
     try {
         conf.reset_duration = duration_from_string(conf.reset_duration_string);
         LOG(INFO) << "Reset duration: " << conf.reset_duration;
@@ -590,7 +603,8 @@ int main(int argc, char *argv[]) {
 
     if (!conf.grandfather_file.empty()) {
         // TODO: use std::regex once libstdc++ has fully implemented it
-        using namespace boost;
+        using boost::regex;
+        using boost::match_results;
         regex key_line_re(
                 "^[a-zA-Z0-9]+$");
         regex key_limit_line_re(
@@ -618,6 +632,19 @@ int main(int argc, char *argv[]) {
             LOG(ERROR) << "Could not open " << conf.grandfather_file;
             exit(EXIT_FAILURE);
         }
+    }
+
+    using std::chrono::milliseconds;
+    using std::chrono::seconds;
+    using std::chrono::duration_cast;   
+    if (conf.connect_timeout_seconds) {
+        conf.connect_timeout = duration_cast<milliseconds>(seconds{conf.connect_timeout_seconds});
+    }
+    if (conf.recv_timeout_seconds) {
+        conf.recv_timeout = duration_cast<milliseconds>(seconds{conf.recv_timeout_seconds});
+    }
+    if (conf.send_timeout_seconds) {
+        conf.send_timeout = duration_cast<milliseconds>(seconds{conf.send_timeout_seconds});
     }
 
     // large stack needed for getaddrinfo
