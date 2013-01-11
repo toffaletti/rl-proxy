@@ -54,16 +54,18 @@ static std::pair<bool, std::string> get_jsonp(http_exchange &ex) {
 }
 
 static void make_jsonp_response(http_exchange &ex, const std::string &callback) {
-    std::string content_type = ex.resp.get("Content-Type");
+    auto content_type = ex.resp.get("Content-Type");
     std::stringstream ss;
-    if (content_type.find("json") != std::string::npos) {
+    if (content_type && content_type->find("json") != std::string::npos) {
         // wrap response in JSONP
         ss << callback << "(" << ex.resp.body << ");\n";
     } else {
-        std::string msg = ex.resp.get("Warning");
-        if (msg.empty()) {
+        std::string msg;
+        auto warn_hdr = ex.resp.get("Warning");
+        if (warn_hdr)
+            msg = *warn_hdr;
+        else
             msg = ex.resp.reason();
-        }
         json status{
             {"status", static_cast<json_int_t>(ex.resp.status_code)},
             {"reason", msg}
@@ -164,7 +166,8 @@ static std::string get_request_apikey(http_exchange &ex) {
     u.query_part().get("apikey", apikey);
     // also check the http headers for an api key
     if (apikey.empty()) {
-        apikey = ex.req.get("X-RateLimit-Key");
+        auto hdr = ex.req.get("X-RateLimit-Key");
+        if (hdr) apikey = *hdr;
     }
 
     return apikey;
@@ -173,12 +176,13 @@ static std::string get_request_apikey(http_exchange &ex) {
 static void log_request(http_exchange &ex) {
     using namespace std::chrono;
     auto elapsed = steady_clock::now() - ex.start;
+    auto cl_hdr = ex.resp.get("Content-Length");
     if (conf.secure_log) {
         LOG(INFO) <<
             ex.req.method << " " <<
             ex.get_uri().path << " " <<
             ex.resp.status_code << " " <<
-            ex.resp.get<size_t>("Content-Length") << " " <<
+            (cl_hdr ? *cl_hdr : "nan") << " " <<
             duration_cast<milliseconds>(elapsed).count() << " " <<
             get_request_apikey(ex);
     } else {
@@ -187,7 +191,7 @@ static void log_request(http_exchange &ex) {
             ex.req.method << " " <<
             ex.req.uri << " " <<
             ex.resp.status_code << " " <<
-            ex.resp.get<size_t>("Content-Length") << " " <<
+            (cl_hdr ? *cl_hdr : "nan") << " " <<
             duration_cast<milliseconds>(elapsed).count() << " " <<
             get_request_apikey(ex);
     }
