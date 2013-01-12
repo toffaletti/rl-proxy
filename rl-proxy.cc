@@ -84,13 +84,13 @@ static http_response resp_connect_error_503{503,
     "Connection", "close",
     "Content-Length", "0")
 };
-static http_response resp_invalid_apikey{400,
+static http_response resp_invalid_apikey{403,
     http_headers(
     "Warning", "Invalid key",
     "Connection", "close",
     "Content-Length", "0")
 };
-static http_response resp_expired_apikey{400,
+static http_response resp_expired_apikey{403,
     http_headers(
     "Warning", "Expired key",
     "Connection", "close",
@@ -102,7 +102,7 @@ static http_response resp_out_of_credits{503,
     "Connection", "close",
     "Content-Length", "0")
 };
-static http_response resp_apikey_required{503,
+static http_response resp_apikey_required{403,
     http_headers(
     "Warning", "Apikey required",
     "Connection", "close",
