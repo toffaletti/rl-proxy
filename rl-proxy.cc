@@ -462,11 +462,12 @@ static void pass_through(http_exchange &ex,
     }
 }
 
-static void fetch_custom_error(http_pool::scoped_resource &cs,
+static void fetch_custom_error(http_pool &pool,
         const std::string &error_resource,
         http_response &error_resp)
 {
     try {
+        http_pool::scoped_resource cs{pool};
         http_response resp = cs->get(error_resource, conf.send_timeout);
         if (resp.status_code == 200) {
             auto ct_hdr = resp.get("Content-Type");
@@ -476,6 +477,7 @@ static void fetch_custom_error(http_pool::scoped_resource &cs,
                 << " " << resp.status_code
                 << " " << resp.reason();
         }
+        cs.done();
     } catch (http_error &e) {
         LOG(ERROR) << "fetching custom error text " << error_resource << " " << e.what();
     }
@@ -486,8 +488,11 @@ static void startup() {
     try {
         auto pool = std::make_shared<http_pool>(conf.backend_host, conf.backend_port);
         if (conf.custom_errors) {
-            http_pool::scoped_resource cs{*pool};
-            fetch_custom_error(cs, "/apikey_required", resp_apikey_required);
+            fetch_custom_error(*pool, "/connect_error", resp_connect_error_503);
+            fetch_custom_error(*pool, "/invalid_apikey", resp_invalid_apikey);
+            fetch_custom_error(*pool, "/expired_apikey", resp_expired_apikey);
+            fetch_custom_error(*pool, "/out_of_credits", resp_out_of_credits);
+            fetch_custom_error(*pool, "/apikey_required", resp_apikey_required);
         }
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
