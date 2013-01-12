@@ -25,13 +25,11 @@ struct proxy_config : app_config {
     uint16_t credit_server_port;
     std::string listen_address;
     unsigned short listen_port;
-    unsigned int credit_limit;
+    unsigned credit_limit;
     std::string vhost;
-    bool use_xff; // ok to trust X-Forwarded-For header
     std::string reset_duration_string;
     std::string secret;
     boost::posix_time::time_duration reset_duration;
-    bool secure_log;
     std::string grandfather_file;
     // these are for program_options
     unsigned connect_timeout_seconds;
@@ -41,6 +39,9 @@ struct proxy_config : app_config {
     optional_timeout connect_timeout;
     optional_timeout recv_timeout;
     optional_timeout send_timeout;
+    bool use_xff = false; // ok to trust X-Forwarded-For header
+    bool secure_log = false;
+    bool custom_errors = false;
 };
 
 // TODO: maybe<> and maybe_if<> would work well here once chip has time
@@ -461,10 +462,33 @@ static void pass_through(http_exchange &ex,
     }
 }
 
+static void fetch_custom_error(http_pool::scoped_resource &cs,
+        const std::string &error_resource,
+        http_response &error_resp)
+{
+    try {
+        http_response resp = cs->get(error_resource, conf.send_timeout);
+        if (resp.status_code == 200) {
+            auto ct_hdr = resp.get("Content-Type");
+            error_resp.set_body(resp.body, (ct_hdr ? *ct_hdr : std::string()));
+        } else {
+            LOG(ERROR) << "fetching custom error text " << error_resource
+                << " " << resp.status_code
+                << " " << resp.reason();
+        }
+    } catch (http_error &e) {
+        LOG(ERROR) << "fetching custom error text " << error_resource << " " << e.what();
+    }
+}
+
 static void startup() {
     using namespace std::placeholders;
     try {
         auto pool = std::make_shared<http_pool>(conf.backend_host, conf.backend_port);
+        if (conf.custom_errors) {
+            http_pool::scoped_resource cs{*pool};
+            fetch_custom_error(cs, "/apikey_required", resp_apikey_required);
+        }
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
         auto cc = std::make_shared<credit_client>(conf.credit_server_host, conf.credit_server_port);
@@ -487,16 +511,14 @@ int main(int argc, char *argv[]) {
         ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(8080), "listening port")
         ("credit-server", po::value<std::string>(&conf.credit_server_host)->default_value("localhost"),
          "credit-server host:port")
-        ("credit-limit", po::value<unsigned int>(&conf.credit_limit)->default_value(3600),
+        ("credit-limit", po::value<unsigned>(&conf.credit_limit)->default_value(3600),
          "credit limit given to new clients")
-        ("vhost", po::value<std::string>(&conf.vhost), "use this virtual host address in Host header to backend")
-        ("use-xff", po::value<bool>(&conf.use_xff)->default_value(false),
-         "trust and use the ip from X-Forwarded-For when available")
+        ("vhost", po::value<std::string>(&conf.vhost),
+         "use this virtual host address in Host header to backend")
         ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"),
          "duration for credit reset interval in hh:mm:ss format")
         ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
-        ("secure-log", po::value<bool>(&conf.secure_log)->default_value(false), "secure logging format")
         ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
         ("connect-timeout", po::value<unsigned>(&conf.connect_timeout_seconds)->default_value(10),
          "socket connection timeout in seconds")
@@ -504,6 +526,12 @@ int main(int argc, char *argv[]) {
          "socket recv timeout in seconds")
         ("send-timeout", po::value<unsigned>(&conf.send_timeout_seconds)->default_value(5),
          "socket send timeout in seconds")
+        ("use-xff", po::value<bool>(&conf.use_xff)->zero_tokens(),
+         "trust and use the ip from X-Forwarded-For when available")
+        ("secure-log", po::value<bool>(&conf.secure_log)->zero_tokens(),
+         "secure logging format")
+        ("custom-errors", po::value<bool>(&conf.custom_errors)->zero_tokens(),
+         "fetch custom error messages from backend")
     ;
     app.opts.pdesc.add("backend", -1);
 
