@@ -1,3 +1,11 @@
+ub-rlproxy (0.1.0-1) lucid; urgency=low
+
+  * options for connect,send,recv timeouts
+  * option for custom error messages
+  * pass through / without key check
+
+ -- Jason Toffaletti <jason@topsy.com>  Fri, 11 Jan 2013 17:52:31 -0800
+
 ub-rlproxy (0.0.9-1) lucid; urgency=low
 
   * add ratelimit headers when credit limit has been reached.
