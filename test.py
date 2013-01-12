@@ -26,9 +26,17 @@ class MyHTTPServer(HTTPServer):
 class RequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Length', '0')
-        self.end_headers()
+        if self.path == "/apikey_required":
+            body = "Key Required";
+            self.send_response(200)
+            self.send_header('Content-Length', len(body))
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(200)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
 
 def serve_http(httpd):
     httpd.serve_forever()
@@ -197,10 +205,43 @@ class TestProxy(TestProxyMixin, unittest.TestCase):
 class TestProxyKeyRequired(TestProxyMixin, unittest.TestCase):
     default_credit_limit = '0'
 
+    @classmethod
+    def setUpClass(cls):
+        # start rl-proxy
+        with open('grandfathered_test_keys', 'w+') as f:
+            f.write('AAAA\n')
+            f.write('AAAB 1\n')
+        cls.credit_proc = Popen([
+            'valgrind', '--log-file=creditserver_valgrind.log',
+            './credit-server',
+            '--port', str(CREDIT_PORT),
+            '--reset-duration', '00:00:10',
+            ])
+
+        cls.proxy_proc = Popen([
+            'valgrind', '--log-file=rlproxy_valgrind.log',
+            './rl-proxy',
+            '--port', str(PROXY_PORT),
+            '--secret', SECRET,
+            '--backend', 'localhost:12480',
+            '--reset-duration', '00:00:10',
+            '--credit-server', 'localhost:%d' % CREDIT_PORT,
+            '--credit-limit', cls.default_credit_limit,
+            '--grandfather', 'grandfathered_test_keys',
+            '--glog-v', '1',
+            '--custom-errors',
+            ])
+        cls.httpd = MyHTTPServer(('127.0.0.1', 12480), RequestHandler)
+        cls.httpd_thread = threading.Thread(target=serve_http, args=(cls.httpd,))
+        cls.httpd_thread.start()
+        cls.http = HttpClient('localhost', PROXY_PORT)
+
     def test_02_credit_deduction_no_key(self):
         r, body = self.http.get('/test.json')
         self.assertEqual(503, r.status)
         self.assertEqual('Apikey required', r.getheader('Warning', ''))
+        self.assertEqual('text/plain', r.getheader('Content-Type', ''))
+        self.assertEqual('Key Required', body)
 
     def test_credit_deduction_generated_key(self):
         # credit limit of 3 inside the key
