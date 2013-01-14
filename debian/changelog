@@ -1,3 +1,9 @@
+ub-rlproxy (0.1.1-1) lucid; urgency=low
+
+  * blacklisted keys file
+
+ -- Jason Toffaletti <jason@topsy.com>  Mon, 14 Jan 2013 12:01:49 -0800
+
 ub-rlproxy (0.1.0-1) lucid; urgency=low
 
   * options for connect,send,recv timeouts
