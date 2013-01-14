@@ -18,7 +18,8 @@ time_t to_time_t(const boost::posix_time::ptime &t) {
 enum apikey_state {
     valid,
     invalid,
-    expired
+    expired,
+    blacklist
 };
 
 struct meta_t {

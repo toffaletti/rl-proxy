@@ -1,6 +1,7 @@
 #include <netdb.h>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "ten/app.hh"
 #include "ten/buffer.hh"
@@ -31,6 +32,7 @@ struct proxy_config : app_config {
     std::string secret;
     boost::posix_time::time_duration reset_duration;
     std::string grandfather_file;
+    std::string blacklist_file;
     // these are for program_options
     unsigned connect_timeout_seconds;
     unsigned recv_timeout_seconds;
@@ -113,6 +115,7 @@ static proxy_config conf;
 static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
 static std::unordered_map<std::string, uint64_t> grandfather_keys;
+static std::unordered_set<std::string> blacklist_keys;
 
 class log_request_t {
     http_exchange &_ex;
@@ -215,6 +218,10 @@ static apikey_state credit_check(http_exchange &ex,
         // use default credit limit for ips
         key.data.credits = conf.credit_limit;
     } else {
+        // check blacklisted keys
+        if (blacklist_keys.count(rawkey)) {
+            return blacklist;
+        }
         // check grandfathered keys
         auto it = grandfather_keys.find(rawkey);
         if (it != grandfather_keys.end()) {
@@ -273,6 +280,7 @@ static void credit_request(http_exchange &ex, std::shared_ptr<credit_client> &cc
             ex.send_response();
             return;
         case expired:
+        case blacklist:
             ex.resp = resp_expired_apikey;
             ex.send_response();
             return;
@@ -369,6 +377,7 @@ static void proxy_if_credits(http_exchange &ex,
             ex.resp = resp_invalid_apikey;
             return;
         case expired:
+        case blacklist:
             LOG(ERROR) << "expired apikey error " << log_r(ex);
             ex.resp = resp_expired_apikey;
             return;
@@ -483,6 +492,68 @@ static void fetch_custom_error(http_pool &pool,
     }
 }
 
+static std::unordered_set<std::string> read_blacklist_file(const std::string &filename) {
+    if (filename.empty()) return {};
+    // TODO: use std::regex once libstdc++ has fully implemented it
+    using boost::regex;
+    using boost::match_results;
+    regex key_line_re(
+            "^[a-zA-Z0-9]+$");
+    std::ifstream gf(filename);
+    std::unordered_set<std::string> keys;
+    if (gf.is_open()) {
+        std::string line;
+        while (std::getline(gf, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            match_results<std::string::const_iterator> result;
+            if (regex_match(line, key_line_re)) {
+                VLOG(2) << "adding blacklisted key: " << line;
+                keys.insert(line);
+            } else {
+                LOG(ERROR) << "skipping blacklist line: " << line;
+            }
+        }
+    } else {
+        LOG(ERROR) << "Could not open " << filename;
+    }
+    return keys;
+}
+
+static std::unordered_map<std::string, uint64_t> read_grandfather_file(const std::string &filename)
+{
+    if (filename.empty()) return {};
+    // TODO: use std::regex once libstdc++ has fully implemented it
+    using boost::regex;
+    using boost::match_results;
+    regex key_line_re(
+            "^[a-zA-Z0-9]+$");
+    regex key_limit_line_re(
+            "^([a-zA-Z0-9]+)[\\ \\t]+([0-9]+)$");
+    std::unordered_map<std::string, uint64_t> keys;
+    std::ifstream gf(filename);
+    if (gf.is_open()) {
+        std::string line;
+        while (std::getline(gf, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            match_results<std::string::const_iterator> result;
+            if (regex_match(line, key_line_re)) {
+                VLOG(2) << "adding grandfather key: " << line;
+                // unlimited
+                keys.insert(std::make_pair(line, (~0)));
+            } else if (regex_match(line, result, key_limit_line_re)) {
+                uint64_t limit = boost::lexical_cast<uint64_t>(result[2]);
+                VLOG(2) << "adding grandfather key: " << result[1] << " " << limit;
+                keys.insert(std::make_pair(result[1], limit));
+            } else {
+                LOG(ERROR) << "skipping grandfather line: " << line;
+            }
+        }
+    } else {
+        LOG(ERROR) << "Could not open " << filename;
+    }
+    return keys;
+}
+
 static void startup() {
     using namespace std::placeholders;
     try {
@@ -525,6 +596,7 @@ int main(int argc, char *argv[]) {
         ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
         ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
+        ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
         ("connect-timeout", po::value<unsigned>(&conf.connect_timeout_seconds)->default_value(10),
          "socket connection timeout in seconds")
         ("recv-timeout", po::value<unsigned>(&conf.recv_timeout_seconds)->default_value(5),
@@ -566,38 +638,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if (!conf.grandfather_file.empty()) {
-        // TODO: use std::regex once libstdc++ has fully implemented it
-        using boost::regex;
-        using boost::match_results;
-        regex key_line_re(
-                "^[a-zA-Z0-9]+$");
-        regex key_limit_line_re(
-                "^([a-zA-Z0-9]+)[\\ \\t]+([0-9]+)$");
-
-        std::ifstream gf(conf.grandfather_file);
-        if (gf.is_open()) {
-            std::string line;
-            while (std::getline(gf, line)) {
-                if (line.empty() || line[0] == '#') continue;
-                match_results<std::string::const_iterator> result;
-                if (regex_match(line, key_line_re)) {
-                    VLOG(2) << "adding grandfather key: " << line;
-                    // unlimited
-                    grandfather_keys.insert(std::make_pair(line, (~0)));
-                } else if (regex_match(line, result, key_limit_line_re)) {
-                    uint64_t limit = boost::lexical_cast<uint64_t>(result[2]);
-                    VLOG(2) << "adding grandfather key: " << result[1] << " " << limit;
-                    grandfather_keys.insert(std::make_pair(result[1], limit));
-                } else {
-                    LOG(ERROR) << "skipping invalid line: " << line;
-                }
-            }
-        } else {
-            LOG(ERROR) << "Could not open " << conf.grandfather_file;
-            exit(EXIT_FAILURE);
-        }
-    }
+    grandfather_keys = read_grandfather_file(conf.grandfather_file);
+    blacklist_keys = read_blacklist_file(conf.blacklist_file);
 
     using std::chrono::milliseconds;
     using std::chrono::seconds;

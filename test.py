@@ -49,6 +49,8 @@ class TestProxyMixin:
         with open('grandfathered_test_keys', 'w+') as f:
             f.write('AAAA\n')
             f.write('AAAB 1\n')
+        with open('blacklisted_test_keys', 'w+') as f:
+            f.write('FFFF\n')
         cls.credit_proc = Popen([
             'valgrind', '--log-file=creditserver_valgrind.log',
             './credit-server',
@@ -66,6 +68,7 @@ class TestProxyMixin:
             '--credit-server', 'localhost:%d' % CREDIT_PORT,
             '--credit-limit', cls.default_credit_limit,
             '--grandfather', 'grandfathered_test_keys',
+            '--blacklist', 'blacklisted_test_keys',
             '--glog-v', '1',
             ])
         cls.httpd = MyHTTPServer(('127.0.0.1', 12480), RequestHandler)
@@ -172,6 +175,10 @@ class TestProxyMixin:
         r, body = self.http.get('/test.json', apikey='AAAB')
         self.assertEqual(200, r.status)
 
+    def test_blacklist_key(self):
+        r, body = self.http.get('/test.json', apikey='FFFF')
+        self.assertEqual(403, r.status)
+
     def test_credit_deduction_generated_key(self):
         # this key will use the default credit limit
         apikey = rlkeygen.key_generate(SECRET, 1, 1, 0)
@@ -238,7 +245,7 @@ class TestProxyKeyRequired(TestProxyMixin, unittest.TestCase):
 
     def test_02_credit_deduction_no_key(self):
         r, body = self.http.get('/test.json')
-        self.assertEqual(503, r.status)
+        self.assertEqual(403, r.status)
         self.assertEqual('Apikey required', r.getheader('Warning', ''))
         self.assertEqual('text/plain', r.getheader('Content-Type', ''))
         self.assertEqual('Key Required', body)
