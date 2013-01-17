@@ -191,7 +191,7 @@ static void log_request(http_exchange &ex) {
             get_request_apikey(ex);
     } else {
         LOG(INFO) <<
-            ex.agent_ip() << " " <<
+            ex.agent_ip(conf.use_xff) << " " <<
             ex.req.method << " " <<
             ex.req.uri << " " <<
             ex.resp.status_code << " " <<
