@@ -44,6 +44,7 @@ struct proxy_config : app_config {
     bool use_xff = false; // ok to trust X-Forwarded-For header
     bool secure_log = false;
     bool custom_errors = false;
+    unsigned retry_limit = 5;
 };
 
 // TODO: maybe<> and maybe_if<> would work well here once chip has time
@@ -75,7 +76,7 @@ static void make_jsonp_response(http_exchange &ex, const std::string &callback) 
         };
         ss << callback << "(" << status << ");\n";
     }
-    ex.resp.set_body(ss.str(), "application/javascript; charset=utf-8");
+    ex.resp.set_body(std::move(ss.str()), "application/javascript; charset=utf-8");
     // must return valid javascript or websites that include this JSONP call will break
     ex.resp.status_code = 200;
 }
@@ -349,7 +350,7 @@ static http_request normalize_request(http_exchange &ex) {
     if (!conf.vhost.empty()) {
         r.set("Host", conf.vhost);
     }
-
+    r.set_body(std::move(ex.req.body));
     return r;
 }
 
@@ -361,6 +362,8 @@ static void do_proxy(http_request &r, http_exchange &ex,
         // try to keep connection persistent by returning it to the pool
         cs.done();
     }
+    // HTTP/1.1 requires content-length
+    ex.resp.set("Content-Length", ex.resp.body.size());
 }
 
 static void proxy_if_credits(http_exchange &ex,
@@ -396,7 +399,7 @@ static void proxy_if_credits(http_exchange &ex,
         return;
     }
 
-    for (;;) {
+    for (unsigned i=0; i<conf.retry_limit; ++i) {
         http_pool::scoped_resource cs{*pool};
         try {
             http_request r = normalize_request(ex);
@@ -425,8 +428,6 @@ static void proxy_request(http_exchange &ex,
         if (jp.first) { // is this jsonp?
             make_jsonp_response(ex, jp.second);
         }
-        // HTTP/1.1 requires content-length
-        ex.resp.set("Content-Length", ex.resp.body.size());
         ssize_t nw = ex.send_response();
         if (nw <= 0) {
             PLOG(ERROR) << "response send error: " << log_r(ex);
@@ -444,12 +445,10 @@ static void pass_through(http_exchange &ex,
         std::shared_ptr<http_pool> &pool)
 {
     try {
-        for (;;) {
+        for (unsigned i=0; i<conf.retry_limit; ++i) {
             try {
                 http_pool::scoped_resource cs{*pool};
                 do_proxy(ex.req, ex, cs);
-                // HTTP/1.1 requires content-length
-                ex.resp.set("Content-Length", ex.resp.body.size());
                 ssize_t nw = ex.send_response();
                 if (nw <= 0) {
                     PLOG(ERROR) << "response send error: " << log_r(ex);
@@ -480,7 +479,7 @@ static void fetch_custom_error(http_pool &pool,
         http_response resp = cs->get(error_resource, conf.send_timeout);
         if (resp.status_code == 200) {
             auto ct_hdr = resp.get("Content-Type");
-            error_resp.set_body(resp.body, (ct_hdr ? *ct_hdr : std::string()));
+            error_resp.set_body(std::move(resp.body), (ct_hdr ? *ct_hdr : std::string()));
         } else {
             LOG(ERROR) << "fetching custom error text " << error_resource
                 << " " << resp.status_code
@@ -599,9 +598,9 @@ int main(int argc, char *argv[]) {
         ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
         ("connect-timeout", po::value<unsigned>(&conf.connect_timeout_seconds)->default_value(10),
          "socket connection timeout in seconds")
-        ("recv-timeout", po::value<unsigned>(&conf.recv_timeout_seconds)->default_value(5),
+        ("recv-timeout", po::value<unsigned>(&conf.recv_timeout_seconds)->default_value(0),
          "socket recv timeout in seconds")
-        ("send-timeout", po::value<unsigned>(&conf.send_timeout_seconds)->default_value(5),
+        ("send-timeout", po::value<unsigned>(&conf.send_timeout_seconds)->default_value(0),
          "socket send timeout in seconds")
         ("use-xff", po::value<bool>(&conf.use_xff)->zero_tokens(),
          "trust and use the ip from X-Forwarded-For when available")

@@ -25,6 +25,17 @@ class MyHTTPServer(HTTPServer):
 
 class RequestHandler(BaseHTTPRequestHandler):
 
+    def do_POST(self):
+        length = int(self.headers.getheader('content-length'))
+        if self.rfile.read(length) == 'hi':
+            self.send_response(200)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        else:
+            self.send_response(500)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
     def do_GET(self):
         if self.path == "/apikey_required":
             body = "Key Required";
@@ -123,6 +134,10 @@ class TestProxyMixin:
         time.sleep(sleep + 1)
 
         r, body = self.http.get('/test.json')
+        self.assertEqual(200, r.status)
+
+    def test_02_post_with_key(self):
+        r, body = self.http.post('/test.json', 'hi', apikey='AAAA')
         self.assertEqual(200, r.status)
 
     def test_credit_deduction_grandfather_unlimited_key(self):

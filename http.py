@@ -31,6 +31,13 @@ class HttpClient:
         body = r.read()
         return (r, body)
 
+    def post(self, path, body, **kw):
+        if len(kw):
+            url = '%s?%s' % (path, urllib.urlencode(kw))
+        else:
+            url = path
+        return self.request('POST', url, body)
+
     def get(self, path, **kw):
         if len(kw):
             url = '%s?%s' % (path, urllib.urlencode(kw))
