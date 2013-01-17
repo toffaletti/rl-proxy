@@ -1,3 +1,11 @@
+ub-rlproxy (0.1.2-1) lucid; urgency=low
+
+  * default no recv/send timeouts
+  * fix POST handling
+  * limit retries
+
+ -- Jason Toffaletti <jason@topsy.com>  Wed, 16 Jan 2013 19:13:04 -0800
+
 ub-rlproxy (0.1.1-1) lucid; urgency=low
 
   * blacklisted keys file
