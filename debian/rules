@@ -10,7 +10,7 @@ DEB_BUILD_ROOT := $(shell pwd)/debian/$(shell dh_listpackages)
 override_dh_auto_build:
 	./libten/cmake/scm-version -strict
 	CC=/usr/bin/gcc-4.7 CXX=/usr/bin/g++-4.7 cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=/opt/topsy .
-	make rl-proxy rl-keygen credit-server credit-client keygen -j4
+	make rl-proxy rl-keygen credit-server credit-client keygen
 
 override_dh_auto_install:
 	DESTDIR=${DEB_BUILD_ROOT} cmake -P cmake_install.cmake
