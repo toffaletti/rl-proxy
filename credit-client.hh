@@ -59,8 +59,7 @@ public:
         }
         saddr.port(port);
 
-        address baddr;
-        baddr.family(saddr.family());
+        address baddr(saddr.family());
         sock.bind(baddr);
         _recv_tid = taskspawn(std::bind(&credit_client::recv_task, this));
     }

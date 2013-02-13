@@ -192,7 +192,7 @@ static void log_request(http_exchange &ex) {
             get_request_apikey(ex);
     } else {
         LOG(INFO) <<
-            ex.agent_ip(conf.use_xff) << " " <<
+            get_value_or(ex.agent_ip(conf.use_xff), "noaddr") << " " <<
             ex.req.method << " " <<
             ex.req.uri << " " <<
             ex.resp.status_code << " " <<
@@ -213,7 +213,8 @@ static apikey_state credit_check(http_exchange &ex,
     uint64_t ckey = 0;
     std::string db = "ip";
     std::string rawkey = get_request_apikey(ex);
-    inet_pton(AF_INET, ex.agent_ip(conf.use_xff).c_str(), &ckey);
+    std::string ip = get_value_or(ex.agent_ip(conf.use_xff), "");
+    inet_pton(AF_INET, ip.c_str(), &ckey);
     apikey_state state = valid;
     if (rawkey.empty()) {
         // use default credit limit for ips
@@ -343,8 +344,8 @@ static http_request normalize_request(http_exchange &ex) {
     if (boost::ends_with(u.path, dot_js)) {
         u.path += "on"; // make .js .json
     }
-    http_request r(ex.req.method, u.compose(true));
-    r.headers = ex.req.headers;
+    http_request r{ex.req};
+    r.uri = u.compose(true);
     // clean up headers that hurt caching
     r.remove("X-Ratelimit-Key");
     if (!conf.vhost.empty()) {
@@ -358,7 +359,7 @@ static void do_proxy(http_request &r, http_exchange &ex,
         http_pool::scoped_resource &cs)
 {
     ex.resp = cs->perform(r, conf.send_timeout);
-    if (!ex.will_close()) {
+    if (!ex.resp.close_after()) {
         // try to keep connection persistent by returning it to the pool
         cs.done();
     }
