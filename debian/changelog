@@ -1,3 +1,9 @@
+ub-rlproxy (0.1.3-1) lucid; urgency=low
+
+  * fix stack smash when large invalid key is given
+
+ -- Jason Toffaletti <jason@topsy.com>  Mon, 25 Feb 2013 14:44:42 -0800
+
 ub-rlproxy (0.1.2-1) lucid; urgency=low
 
   * default no recv/send timeouts
