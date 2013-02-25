@@ -91,7 +91,11 @@ struct key_engine {
 
     bool verify(const std::string &b32key, apikey &key) {
         try {
-            stlencoders::base32<char>::decode(b32key.begin(), b32key.end(), (uint8_t *)&key);
+            std::vector<uint8_t> out;
+            stlencoders::base32<char>::decode(b32key.begin(), b32key.end(), std::back_inserter(out));
+            // base32 key was the wrong length
+            if (out.size() != sizeof(apikey)) return false;
+            memcpy(&key, &out[0], sizeof(apikey));
             unsigned char md[20];
             unsigned int mdlen = sizeof(md);
             HMAC(EVP_sha1(), secret.data(), secret.size(), (uint8_t *)&key.data, sizeof(key.data), md, &mdlen);
