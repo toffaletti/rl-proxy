@@ -64,8 +64,13 @@ static void parse_args(options &opts, int argc, char *argv[]) {
 }
 
 struct config {
+    std::string grandfather_file;
+    std::string blacklist_file;
+    std::string secret;
     std::string server_host;
     uint16_t server_port;
+    std::string ip;
+    std::string rawkey;
     std::string db;
     uint64_t key;
     uint64_t value;
@@ -73,15 +78,27 @@ struct config {
 
 // globals
 static config conf;
+static key_engine keng{""};
 
 static void startup() {
     taskname("startup");
-    credit_client cc{conf.server_host, conf.server_port};
-    if (cc.query(conf.db, conf.key, conf.value)) {
-        std::cout << conf.db << "[" << conf.key << "]=" << conf.value << "\n";
+    credit_client cc{conf.server_host, conf.server_port,
+        conf.blacklist_file, conf.grandfather_file};
+    if (conf.db.empty()) {
+        if (conf.secret.empty()) {
+            std::cerr << "Error: secret key is required\n\n";
+            procshutdown();
+            return;
+        }
+        keng.secret = conf.secret;
+        apikey akey = {};
+        cc.full_query(conf.ip, conf.rawkey, conf.key, akey, conf.db, conf.value, keng, 1);
     } else {
-        std::cerr << "timeout\n";
+        if (!cc.query(conf.db, conf.key, conf.value)) {
+            std::cerr << "timeout\n";
+        }
     }
+    std::cout << conf.db << "[" << conf.key << "]=" << conf.value << "\n";
     cc.close();
 }
 
@@ -91,8 +108,13 @@ int main(int argc, char *argv[]) {
 
     opts.configuration.add_options()
         ("credit-server", po::value<std::string>(&conf.server_host)->default_value("localhost"), "credit-server host:port")
-        ("db", po::value<std::string>(&conf.db)->default_value("default"), "database name")
-        ("key", po::value<uint64_t>(&conf.key)->default_value(0), "key")
+        ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
+        ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
+        ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
+        ("ip", po::value<std::string>(&conf.ip)->default_value(""), "use ip key and ip database")
+        ("db", po::value<std::string>(&conf.db)->default_value(""), "database name")
+        ("rawkey", po::value<std::string>(&conf.rawkey)->default_value(""), "rawkey")
+        ("key", po::value<uint64_t>(&conf.key)->default_value(0), "64bit numeric key")
         ("value", po::value<uint64_t>(&conf.value)->default_value(0), "value")
     ;
 

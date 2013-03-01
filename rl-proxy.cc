@@ -1,19 +1,10 @@
 #include <netdb.h>
 #include <memory>
-#include <unordered_map>
-#include <unordered_set>
-
 #include "ten/app.hh"
 #include "ten/buffer.hh"
 #include "ten/http/server.hh"
 #include "ten/http/client.hh"
 #include "ten/json.hh"
-#include <boost/lexical_cast.hpp>
-#include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/date_time/gregorian/gregorian.hpp>
-#include <boost/regex.hpp> // libstdc++-4.7 regex isn't ready yet
-
-#include "keygen.hh"
 #include "credit-client.hh"
 
 using namespace ten;
@@ -115,8 +106,6 @@ static http_response resp_apikey_required{403,
 static proxy_config conf;
 static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
-static std::unordered_map<std::string, uint64_t> grandfather_keys;
-static std::unordered_set<std::string> blacklist_keys;
 
 class log_request_t {
     http_exchange &_ex;
@@ -204,71 +193,20 @@ static void log_request(http_exchange &ex) {
 
 static apikey_state credit_check(http_exchange &ex,
     std::shared_ptr<credit_client> &cc,
-    apikey &key,
+    apikey &akey,
     uint64_t &value)
 {
-    using namespace boost::gregorian;
-    using namespace boost::posix_time;
-
-    uint64_t ckey = 0;
-    std::string db = "ip";
     std::string rawkey = get_request_apikey(ex);
-    std::string ip = get_value_or(ex.agent_ip(conf.use_xff), "");
-    inet_pton(AF_INET, ip.c_str(), &ckey);
-    apikey_state state = valid;
-    if (rawkey.empty()) {
-        // use default credit limit for ips
-        key.data.credits = conf.credit_limit;
-    } else {
-        // check blacklisted keys
-        if (blacklist_keys.count(rawkey)) {
-            return blacklist;
-        }
-        // check grandfathered keys
-        auto it = grandfather_keys.find(rawkey);
-        if (it != grandfather_keys.end()) {
-            db = "old";
-            if (it->second == (uint64_t)~0) {
-                value = 0; // never increment credits for unlimited keys
-            }
-            std::hash<std::string> h;
-            ckey = h(rawkey);
-            key.data.credits = it->second;
-        } else if (!keng.verify(rawkey, key)) {
-            // report invalid key to caller
-            // so we can send an error code back to the client
-            // but not before deducting a credit from their ip
-            state = invalid;
-            if (value == 0) value = 1; // force deducting for invalid keys
-            LOG(WARNING) << "invalid apikey: |" << rawkey << "|\n";
-        } else {
-            LOG(INFO) << "apikey: " << rawkey << " data: " << key.data << "\n";
-            // TODO: org only db
-            db = "app";
-            uint64_t org_id = key.data.org_id;
-            uint64_t app_id = key.data.app_id;
-
-            // pack org_id and app_id into 64 bits for the key
-            ckey = org_id << 16;
-            ckey |= app_id;
-
-            if (key.data.credits == 0) {
-                // use default credit limit for keys with no embedded limit
-                // XXX: lookup the limit in an external database
-                key.data.credits = conf.credit_limit;
-            }
-            if (key.data.expires != 0) {
-                if (time(0) >= (time_t)key.data.expires) {
-                    state = expired;
-                    if (value == 0) value = 1; // force deducting for invalid keys
-                    LOG(WARNING) << "expired apikey: " << rawkey << "\n";
-                }
-            }
-        }
-    }
-    // TODO: returning the count in value is really confusing
-    cc->query(db, ckey, value);
-    return state;
+    uint64_t ckey = 0;
+    std::string dbout;
+    return cc->full_query(ex.agent_ip(conf.use_xff),
+            rawkey,
+            ckey,
+            akey,
+            dbout,
+            value,
+            keng,
+            conf.credit_limit);
 }
 
 static void credit_request(http_exchange &ex, std::shared_ptr<credit_client> &cc) {
@@ -492,68 +430,6 @@ static void fetch_custom_error(http_pool &pool,
     }
 }
 
-static std::unordered_set<std::string> read_blacklist_file(const std::string &filename) {
-    if (filename.empty()) return {};
-    // TODO: use std::regex once libstdc++ has fully implemented it
-    using boost::regex;
-    using boost::match_results;
-    regex key_line_re(
-            "^[a-zA-Z0-9]+$");
-    std::ifstream gf(filename);
-    std::unordered_set<std::string> keys;
-    if (gf.is_open()) {
-        std::string line;
-        while (std::getline(gf, line)) {
-            if (line.empty() || line[0] == '#') continue;
-            match_results<std::string::const_iterator> result;
-            if (regex_match(line, key_line_re)) {
-                VLOG(2) << "adding blacklisted key: " << line;
-                keys.insert(line);
-            } else {
-                LOG(ERROR) << "skipping blacklist line: " << line;
-            }
-        }
-    } else {
-        LOG(ERROR) << "Could not open " << filename;
-    }
-    return keys;
-}
-
-static std::unordered_map<std::string, uint64_t> read_grandfather_file(const std::string &filename)
-{
-    if (filename.empty()) return {};
-    // TODO: use std::regex once libstdc++ has fully implemented it
-    using boost::regex;
-    using boost::match_results;
-    regex key_line_re(
-            "^[a-zA-Z0-9]+$");
-    regex key_limit_line_re(
-            "^([a-zA-Z0-9]+)[\\ \\t]+([0-9]+)$");
-    std::unordered_map<std::string, uint64_t> keys;
-    std::ifstream gf(filename);
-    if (gf.is_open()) {
-        std::string line;
-        while (std::getline(gf, line)) {
-            if (line.empty() || line[0] == '#') continue;
-            match_results<std::string::const_iterator> result;
-            if (regex_match(line, key_line_re)) {
-                VLOG(2) << "adding grandfather key: " << line;
-                // unlimited
-                keys.insert(std::make_pair(line, (~0)));
-            } else if (regex_match(line, result, key_limit_line_re)) {
-                uint64_t limit = boost::lexical_cast<uint64_t>(result[2]);
-                VLOG(2) << "adding grandfather key: " << result[1] << " " << limit;
-                keys.insert(std::make_pair(result[1], limit));
-            } else {
-                LOG(ERROR) << "skipping grandfather line: " << line;
-            }
-        }
-    } else {
-        LOG(ERROR) << "Could not open " << filename;
-    }
-    return keys;
-}
-
 static void startup() {
     using namespace std::placeholders;
     try {
@@ -567,7 +443,11 @@ static void startup() {
         }
         conf.credit_server_port = 9876;
         parse_host_port(conf.credit_server_host, conf.credit_server_port);
-        auto cc = std::make_shared<credit_client>(conf.credit_server_host, conf.credit_server_port);
+        auto cc = std::make_shared<credit_client>(
+                conf.credit_server_host,
+                conf.credit_server_port,
+                conf.blacklist_file,
+                conf.grandfather_file);
         std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024);
         proxy->set_log_callback(log_request);
         proxy->add_route("/", std::bind(pass_through, _1, pool));
@@ -637,9 +517,6 @@ int main(int argc, char *argv[]) {
         LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
         exit(EXIT_FAILURE);
     }
-
-    grandfather_keys = read_grandfather_file(conf.grandfather_file);
-    blacklist_keys = read_blacklist_file(conf.blacklist_file);
 
     using std::chrono::milliseconds;
     using std::chrono::seconds;
