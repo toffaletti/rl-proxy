@@ -126,9 +126,9 @@ public:
                 // but not before deducting a credit from their ip
                 state = invalid;
                 if (value == 0) value = 1; // force deducting for invalid keys
-                LOG(WARNING) << "invalid apikey: |" << rawkey << "|\n";
+                VLOG(2) << "invalid apikey: |" << rawkey << "|\n";
             } else {
-                LOG(INFO) << "apikey: " << rawkey << " data: " << key.data << "\n";
+                VLOG(2) << "apikey: " << rawkey << " data: " << key.data << "\n";
                 // TODO: org only db
                 db = "app";
                 uint64_t org_id = key.data.org_id;
@@ -147,7 +147,7 @@ public:
                     if (time(0) >= (time_t)key.data.expires) {
                         state = expired;
                         if (value == 0) value = 1; // force deducting for invalid keys
-                        LOG(WARNING) << "expired apikey: " << rawkey << "\n";
+                        VLOG(2) << "expired apikey: " << rawkey << "\n";
                     }
                 }
             }

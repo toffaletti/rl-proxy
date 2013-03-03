@@ -167,6 +167,46 @@ static std::string get_request_apikey(http_exchange &ex) {
     return apikey;
 }
 
+static void log_api_request(http_exchange &ex, apikey akey, apikey_state state, uint64_t credit_value) {
+    using namespace std::chrono;
+    auto elapsed = steady_clock::now() - ex.start;
+    auto cl_hdr = ex.resp.get("Content-Length");
+    auto rawkey = get_request_apikey(ex);
+    std::string keyinfo = "";
+    if (!rawkey.empty()) {
+        static constexpr uint8_t zero_digest[10] = {};
+        std::ostringstream ss;
+        ss << rawkey;
+        if (memcmp(zero_digest, akey.digest, sizeof(zero_digest))) {
+            // this is not a grandfather key
+            ss << " "
+                << akey.data << " "
+                << state << " "
+                << credit_value;
+        }
+        keyinfo = ss.str();
+    }
+    if (conf.secure_log) {
+        LOG(INFO) <<
+            ex.req.method << " " <<
+            ex.get_uri().path << " " <<
+            ex.resp.status_code << " " <<
+            (cl_hdr ? *cl_hdr : "nan") << " " <<
+            duration_cast<milliseconds>(elapsed).count() << " " <<
+            keyinfo;
+
+    } else {
+        LOG(INFO) <<
+            get_value_or(ex.agent_ip(conf.use_xff), "noaddr") << " " <<
+            ex.req.method << " " <<
+            ex.req.uri << " " <<
+            ex.resp.status_code << " " <<
+            (cl_hdr ? *cl_hdr : "nan") << " " <<
+            duration_cast<milliseconds>(elapsed).count() << " " <<
+            keyinfo;
+    }
+}
+
 static void log_request(http_exchange &ex) {
     using namespace std::chrono;
     auto elapsed = steady_clock::now() - ex.start;
@@ -198,18 +238,22 @@ static apikey_state credit_check(http_exchange &ex,
 {
     std::string rawkey = get_request_apikey(ex);
     uint64_t ckey = 0;
-    std::string dbout;
-    return cc->full_query(ex.agent_ip(conf.use_xff),
+    std::string db;
+    apikey_state state = cc->full_query(ex.agent_ip(conf.use_xff),
             rawkey,
             ckey,
             akey,
-            dbout,
+            db,
             value,
             keng,
             conf.credit_limit);
+    ex.log_func = [=](http_exchange &ex) {
+        log_api_request(ex, akey, state, value);
+    };
+    return state;
 }
 
-static void credit_request(http_exchange &ex, std::shared_ptr<credit_client> &cc) {
+static void route_credit_request(http_exchange &ex, std::shared_ptr<credit_client> &cc) {
     uint64_t value = 0; // value of 0 will just return how many credits are used
     apikey key = {};
     switch (credit_check(ex, cc, key, value)) {
@@ -315,12 +359,12 @@ static void proxy_if_credits(http_exchange &ex,
         case valid:
             break;
         case invalid:
-            LOG(ERROR) << "invalid apikey error " << log_r(ex);
+            VLOG(2) << "invalid apikey error " << log_r(ex);
             ex.resp = resp_invalid_apikey;
             return;
         case expired:
         case blacklist:
-            LOG(ERROR) << "expired apikey error " << log_r(ex);
+            VLOG(2) << "expired apikey error " << log_r(ex);
             ex.resp = resp_expired_apikey;
             return;
     }
@@ -357,7 +401,7 @@ static void proxy_if_credits(http_exchange &ex,
     }
 }
 
-static void proxy_request(http_exchange &ex,
+static void route_proxy_request(http_exchange &ex,
         std::shared_ptr<credit_client> &cc,
         std::shared_ptr<http_pool> &pool)
 {
@@ -380,7 +424,7 @@ static void proxy_request(http_exchange &ex,
     }
 }
 
-static void pass_through(http_exchange &ex,
+static void route_pass_through(http_exchange &ex,
         std::shared_ptr<http_pool> &pool)
 {
     try {
@@ -450,9 +494,9 @@ static void startup() {
                 conf.grandfather_file);
         std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024);
         proxy->set_log_callback(log_request);
-        proxy->add_route("/", std::bind(pass_through, _1, pool));
-        proxy->add_route("/credit.json", std::bind(credit_request, _1, cc));
-        proxy->add_route("*", std::bind(proxy_request, _1, cc, pool));
+        proxy->add_route("/", std::bind(route_pass_through, _1, pool));
+        proxy->add_route("/credit.json", std::bind(route_credit_request, _1, cc));
+        proxy->add_route("*", std::bind(route_proxy_request, _1, cc, pool));
         proxy->serve(conf.listen_address, conf.listen_port);
     } catch (std::exception &e) {
         LOG(ERROR) << e.what();

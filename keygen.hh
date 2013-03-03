@@ -9,7 +9,7 @@
 #include "ten/encoders.hh"
 #include <boost/date_time/posix_time/posix_time.hpp>
 
-time_t to_time_t(const boost::posix_time::ptime &t) {
+inline time_t to_time_t(const boost::posix_time::ptime &t) {
     using namespace boost::posix_time;
     struct tm tt = to_tm(t);
     return mktime(&tt);
@@ -22,6 +22,27 @@ enum apikey_state {
     blacklist
 };
 
+inline std::ostream &operator <<(std::ostream &o, apikey_state state) {
+    switch (state) {
+        case valid:
+            o << "valid";
+            break;
+        case invalid:
+            o << "invalid";
+            break;
+        case expired:
+            o << "expired";
+            break;
+        case blacklist:
+            o << "blaclist";
+            break;
+        default:
+            o << "unknown";
+            break;
+    }
+    return o;
+}
+
 struct meta_t {
     uint64_t org_id:48;
     uint64_t app_id:16;
@@ -30,7 +51,7 @@ struct meta_t {
     uint32_t credits:24;
 } __attribute__((packed));
 
-std::ostream &operator <<(std::ostream &o, const meta_t &m) {
+inline std::ostream &operator <<(std::ostream &o, const meta_t &m) {
     char expires[128];
     if (m.expires > 0) {
         struct tm tm = {};
