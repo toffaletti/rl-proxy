@@ -12,11 +12,11 @@ const size_t default_stacksize=256*1024;
 
 struct proxy_config : app_config {
     std::string backend_host;
-    unsigned short backend_port;
+    uint16_t backend_port;
     std::string credit_server_host;
     uint16_t credit_server_port;
     std::string listen_address;
-    unsigned short listen_port;
+    uint16_t listen_port;
     unsigned credit_limit;
     std::string vhost;
     std::string reset_duration_string;
@@ -36,6 +36,9 @@ struct proxy_config : app_config {
     bool secure_log = false;
     bool custom_errors = false;
     unsigned retry_limit = 5;
+    unsigned mirror_percentage = 0;
+    std::string mirror_host;
+    uint16_t mirror_port = 0;
 };
 
 // TODO: maybe<> and maybe_if<> would work well here once chip has time
@@ -103,6 +106,7 @@ static http_response resp_apikey_required{403,
     "Content-Length", "0")
 };
 
+static std::atomic<uint64_t> request_count{0};
 static proxy_config conf;
 static key_engine keng{""};
 static boost::posix_time::ptime reset_time;
@@ -337,6 +341,22 @@ static http_request normalize_request(http_exchange &ex) {
     return r;
 }
 
+static void mirror_task(http_request &r, 
+        std::shared_ptr<http_pool> &mirror_pool
+        )
+{
+    try {
+        http_pool::scoped_resource cs{*mirror_pool};
+        http_response resp = cs->perform(r, conf.send_timeout);
+        if (!resp.close_after()) {
+            // try to keep connection persistent by returning it to the pool
+            cs.done();
+        }
+    } catch (std::exception &e) {
+        VLOG(1) << "error mirroring traffic: " << e.what();
+    }
+}
+
 static void do_proxy(http_request &r, http_exchange &ex,
         http_pool::scoped_resource &cs)
 {
@@ -351,7 +371,9 @@ static void do_proxy(http_request &r, http_exchange &ex,
 
 static void proxy_if_credits(http_exchange &ex,
         std::shared_ptr<credit_client> &cc,
-        std::shared_ptr<http_pool> &pool)
+        std::shared_ptr<http_pool> &pool,
+        std::shared_ptr<http_pool> &mirror_pool
+        )
 {
     apikey key = {};
     uint64_t value = 1;
@@ -382,10 +404,19 @@ static void proxy_if_credits(http_exchange &ex,
         return;
     }
 
+    http_request r = normalize_request(ex);
+
+    if (mirror_pool) {
+        uint64_t count = request_count++;
+        unsigned mod = conf.mirror_percentage / 100.0f;
+        if (mod && (count % mod) == 0) {
+            taskspawn(std::bind(mirror_task, r, mirror_pool));
+        }
+    }
+
     for (unsigned i=0; i<conf.retry_limit; ++i) {
         http_pool::scoped_resource cs{*pool};
         try {
-            http_request r = normalize_request(ex);
             do_proxy(r, ex, cs);
             boost::posix_time::time_duration till_reset;
             calculate_reset_time(conf.reset_duration, reset_time, till_reset);
@@ -403,10 +434,12 @@ static void proxy_if_credits(http_exchange &ex,
 
 static void route_proxy_request(http_exchange &ex,
         std::shared_ptr<credit_client> &cc,
-        std::shared_ptr<http_pool> &pool)
+        std::shared_ptr<http_pool> &pool,
+        std::shared_ptr<http_pool> &mirror_pool
+        )
 {
     try {
-        proxy_if_credits(ex, cc, pool);
+        proxy_if_credits(ex, cc, pool, mirror_pool);
         auto jp = get_jsonp(ex);
         if (jp.first) { // is this jsonp?
             make_jsonp_response(ex, jp.second);
@@ -478,6 +511,10 @@ static void startup() {
     using namespace std::placeholders;
     try {
         auto pool = std::make_shared<http_pool>(conf.backend_host, conf.backend_port);
+        std::shared_ptr<http_pool> mirror_pool;
+        if (conf.mirror_percentage > 0 && !conf.mirror_host.empty()) {
+            mirror_pool = std::make_shared<http_pool>(conf.mirror_host, conf.mirror_port);
+        }
         if (conf.custom_errors) {
             fetch_custom_error(*pool, "/connect_error", resp_connect_error_503);
             fetch_custom_error(*pool, "/invalid_apikey", resp_invalid_apikey);
@@ -496,7 +533,7 @@ static void startup() {
         proxy->set_log_callback(log_request);
         proxy->add_route("/", std::bind(route_pass_through, _1, pool));
         proxy->add_route("/credit.json", std::bind(route_credit_request, _1, cc));
-        proxy->add_route("*", std::bind(route_proxy_request, _1, cc, pool));
+        proxy->add_route("*", std::bind(route_proxy_request, _1, cc, pool, mirror_pool));
         proxy->serve(conf.listen_address, conf.listen_port);
     } catch (std::exception &e) {
         LOG(ERROR) << e.what();
@@ -533,17 +570,27 @@ int main(int argc, char *argv[]) {
          "secure logging format")
         ("custom-errors", po::value<bool>(&conf.custom_errors)->zero_tokens(),
          "fetch custom error messages from backend")
+        ("mirror-percentage", po::value<unsigned>(&conf.mirror_percentage)->default_value(0),
+         "percentage of traffic to mirror")
+        ("mirror", po::value<std::string>(&conf.mirror_host), "mirror backend host:port address")
     ;
     app.opts.pdesc.add("backend", -1);
 
     app.parse_args(argc, argv);
     conf.backend_port = 0;
     parse_host_port(conf.backend_host, conf.backend_port);
+    parse_host_port(conf.mirror_host, conf.mirror_port);
 
     if (conf.backend_host.empty() || conf.backend_port == 0) {
         std::cerr << "Error: backend host:port address required\n\n";
         app.showhelp();
         exit(EXIT_FAILURE);
+    }
+    LOG(INFO) << "backend: " << conf.backend_host << ":" << conf.backend_port;
+
+    if (!conf.mirror_host.empty()) {
+        LOG(INFO) << "mirroring " << conf.mirror_percentage
+            << "% of traffic to: " << conf.mirror_host << ":" << conf.mirror_port;
     }
 
     if (conf.secret.empty()) {
