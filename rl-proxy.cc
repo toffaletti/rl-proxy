@@ -345,15 +345,21 @@ static void mirror_task(http_request &r,
         std::shared_ptr<http_pool> &mirror_pool
         )
 {
-    try {
-        http_pool::scoped_resource cs{*mirror_pool};
-        http_response resp = cs->perform(r, conf.send_timeout);
-        if (!resp.close_after()) {
-            // try to keep connection persistent by returning it to the pool
-            cs.done();
+    for (unsigned i=0; i<conf.retry_limit; ++i) {
+        try {
+            http_pool::scoped_resource cs{*mirror_pool};
+            http_response resp = cs->perform(r, conf.send_timeout);
+            if (!resp.close_after()) {
+                // try to keep connection persistent by returning it to the pool
+                cs.done();
+            }
+            break;
+        } catch (http_closed_error &e) {
+            continue;
+        } catch (std::exception &e) {
+            VLOG(1) << "error mirroring traffic: " << e.what();
+            break;
         }
-    } catch (std::exception &e) {
-        VLOG(1) << "error mirroring traffic: " << e.what();
     }
 }
 
