@@ -1,10 +1,11 @@
 #include "ten/app.hh"
+#include "ten/net.hh"
 #include "credit-client.hh"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/gregorian/gregorian.hpp>
 
 using namespace ten;
-const size_t default_stacksize=8*1024;
+const size_t default_stacksize=256*1024;
 
 struct credit_server_config : app_config {
     std::string listen_address;
@@ -21,8 +22,7 @@ public:
     typedef std::unordered_map<uint64_t, uint64_t> kv_map_t;
     typedef std::unordered_map<std::string, kv_map_t> db_map_t;
 
-    credit_server() : sock{AF_INET, SOCK_DGRAM} {
-    }
+    credit_server() : sock{AF_INET, SOCK_DGRAM} {}
 
     void serve(const std::string &ipaddr, uint16_t port) {
         address baddr{ipaddr.c_str(), port};
@@ -30,11 +30,11 @@ public:
         sock.getsockname(baddr);
         LOG(INFO) << "listening on: " << baddr;
         taskspawn(std::bind(&credit_server::reset_task, this));
-        taskspawn(std::bind(&credit_server::listen_task, this));
+        listen_task();
     }
 
 private:
-    socket_fd sock;
+    netsock sock;
     db_map_t dbs;
 
     boost::posix_time::time_duration till_reset(
@@ -63,8 +63,8 @@ private:
     void listen_task() {
         address faddr;
         packet pkt;
-        while (fdwait(sock.fd, 'r')) {
-            ssize_t nr = sock.recvfrom(&pkt, sizeof(pkt), faddr);
+        while (fdwait(sock.s.fd, 'r')) {
+            ssize_t nr = sock.s.recvfrom(&pkt, sizeof(pkt), faddr);
             if (nr < (ssize_t)sizeof(pkt)) break;
             VLOG(3) << "got packet xid: " << pkt.xid << " from: " << faddr;
             kv_map_t &db = dbs[pkt.db_name()];
@@ -83,11 +83,20 @@ private:
                 }
             }
             VLOG(3) << "db " << pkt.db_name() << " value: " << pkt.value << " for key: " << pkt.key;
-            ssize_t nw = sock.sendto(&pkt, sizeof(pkt), faddr);
+            ssize_t nw = sock.s.sendto(&pkt, sizeof(pkt), faddr);
             (void)nw; // ignore send errors
         }
     }
 };
+
+void startup() {
+    try {
+        credit_server server;
+        server.serve(conf.listen_address, conf.listen_port);
+    } catch (std::exception &e) {
+        LOG(ERROR) << "server error: " << e.what();
+    }
+}
 
 int main(int argc, char *argv[]) {
     application app{"0.0.1", conf};
@@ -108,8 +117,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    credit_server server;
-    server.serve(conf.listen_address, conf.listen_port);
+    taskspawn(startup);
 
     return app.run();
 }
