@@ -8,7 +8,7 @@ generate and verify keys for rl-proxy
 """
 
 from ctypes import *
-from datetime import date
+from datetime import datetime
 import time
 
 __all__ = ['key_generate', 'key_verify']
@@ -47,7 +47,7 @@ def key_verify(secret, key):
     if status:
         expires = None
         if expire_time.value:
-            expires = date.fromtimestamp(expire_time.value)
+            expires = datetime.fromtimestamp(expire_time.value)
         return dict(
                 org_id=org_id.value,
                 app_id=app_id.value,
