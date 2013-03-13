@@ -1,3 +1,12 @@
+ub-rlproxy (0.1.4-1) lucid; urgency=low
+
+  * credit-client improvements for key lookup
+  * logging improvements
+  * traffic mirroring
+  * use datetime for expire time in python module
+
+ -- Jason Toffaletti <jason@topsy.com>  Wed, 13 Mar 2013 15:25:02 -0700
+
 ub-rlproxy (0.1.3-1) lucid; urgency=low
 
   * fix stack smash when large invalid key is given
