@@ -78,7 +78,9 @@ public:
 
         address baddr(saddr.family());
         sock.bind(baddr);
-        _recv_tid = taskspawn(std::bind(&credit_client::recv_task, this));
+        _recv_task = task::spawn([=] {
+            recv_task();
+        });
     }
 
     ~credit_client() {
@@ -174,7 +176,6 @@ public:
                 //bool success = t.ch.timed_recv(pkt, timeout_ms);
                 //if (success) { val = pkt.value; }
                 //return success;
-                taskstate("waiting for credit-server");
                 pkt = t.ch.recv();
                 val = pkt.value;
                 return true;
@@ -184,7 +185,7 @@ public:
     }
 
     void close() {
-        taskcancel(_recv_tid);
+        _recv_task.cancel();
     }
 
     static std::unordered_set<std::string> read_blacklist_file(const std::string &filename) {
@@ -254,13 +255,12 @@ private:
     address saddr;
     uint64_t xid;
     task_map tasks;
-    uint64_t _recv_tid;
+    task _recv_task;
 
     std::unordered_map<std::string, uint64_t> _grandfather_keys;
     std::unordered_set<std::string> _blacklist_keys;
 
     void recv_task() {
-        taskname("credit_client::recv_task");
         address faddr;
         packet pkt;
         while (fdwait(sock.fd, 'r')) {

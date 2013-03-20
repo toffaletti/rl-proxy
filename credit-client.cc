@@ -5,7 +5,6 @@
 #include <boost/program_options/parsers.hpp>
 
 using namespace ten;
-const size_t default_stacksize=8*1024;
 
 namespace po = boost::program_options;
 
@@ -81,13 +80,12 @@ static config conf;
 static key_engine keng{""};
 
 static void startup() {
-    taskname("startup");
     credit_client cc{conf.server_host, conf.server_port,
         conf.blacklist_file, conf.grandfather_file};
     if (conf.db.empty()) {
         if (conf.secret.empty()) {
             std::cerr << "Error: secret key is required\n\n";
-            procshutdown();
+            kernel::shutdown();
             return;
         }
         keng.secret = conf.secret;
@@ -103,26 +101,26 @@ static void startup() {
 }
 
 int main(int argc, char *argv[]) {
-    procmain p;
-    options opts;
+    return task::main([&] {
+        options opts;
 
-    opts.configuration.add_options()
-        ("credit-server", po::value<std::string>(&conf.server_host)->default_value("localhost"), "credit-server host:port")
-        ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
-        ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
-        ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
-        ("ip", po::value<std::string>(&conf.ip)->default_value(""), "use ip key and ip database")
-        ("db", po::value<std::string>(&conf.db)->default_value(""), "database name")
-        ("rawkey", po::value<std::string>(&conf.rawkey)->default_value(""), "rawkey")
-        ("key", po::value<uint64_t>(&conf.key)->default_value(0), "64bit numeric key")
-        ("value", po::value<uint64_t>(&conf.value)->default_value(0), "value")
-    ;
+        opts.configuration.add_options()
+            ("credit-server", po::value<std::string>(&conf.server_host)->default_value("localhost"), "credit-server host:port")
+            ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
+            ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
+            ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
+            ("ip", po::value<std::string>(&conf.ip)->default_value(""), "use ip key and ip database")
+            ("db", po::value<std::string>(&conf.db)->default_value(""), "database name")
+            ("rawkey", po::value<std::string>(&conf.rawkey)->default_value(""), "rawkey")
+            ("key", po::value<uint64_t>(&conf.key)->default_value(0), "64bit numeric key")
+            ("value", po::value<uint64_t>(&conf.value)->default_value(0), "value")
+        ;
 
-    parse_args(opts, argc, argv);
+        parse_args(opts, argc, argv);
 
-    conf.server_port = 9876;
-    parse_host_port(conf.server_host, conf.server_port);
+        conf.server_port = 9876;
+        parse_host_port(conf.server_host, conf.server_port);
 
-    taskspawn(startup, 8*1024*1024);
-    return p.main(argc, argv);
+        task::spawn(startup);
+    });
 }

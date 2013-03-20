@@ -5,7 +5,6 @@
 #include <boost/date_time/gregorian/gregorian.hpp>
 
 using namespace ten;
-const size_t default_stacksize=256*1024;
 
 struct credit_server_config : app_config {
     std::string listen_address;
@@ -29,7 +28,9 @@ public:
         sock.bind(baddr);
         sock.getsockname(baddr);
         LOG(INFO) << "listening on: " << baddr;
-        taskspawn(std::bind(&credit_server::reset_task, this));
+        task::spawn([=] {
+            reset_task();
+        });
         listen_task();
     }
 
@@ -51,10 +52,11 @@ private:
     }
 
     void reset_task() {
+        using std::chrono::milliseconds;
         for (;;) {
             boost::posix_time::time_duration ttr = till_reset(conf.reset_duration);
             VLOG(3) << "sleeping for " << ttr.total_seconds() << " seconds";
-            tasksleep(ttr.total_milliseconds());
+            this_task::sleep_for(milliseconds{ttr.total_milliseconds()});
             VLOG(3) << "reseting credits";
             dbs.clear();
         }
@@ -99,25 +101,26 @@ void startup() {
 }
 
 int main(int argc, char *argv[]) {
-    application app{"0.0.1", conf};
-    namespace po = boost::program_options;
-    app.opts.configuration.add_options()
-        ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
-        ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(9876), "listening port")
-        ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"), "duration for credit reset interval in hh:mm:ss format")
-        ;
+    return task::main([&] {
+        application app{"0.0.1", conf};
+        namespace po = boost::program_options;
+        app.opts.configuration.add_options()
+            ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
+            ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(9876), "listening port")
+            ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"), "duration for credit reset interval in hh:mm:ss format")
+            ;
 
-    app.parse_args(argc, argv);
-    using namespace boost::posix_time;
-    try {
-        conf.reset_duration = duration_from_string(conf.reset_duration_string);
-        LOG(INFO) << "Reset duration: " << conf.reset_duration;
-    } catch (std::exception &e) {
-        LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
-        exit(1);
-    }
+        app.parse_args(argc, argv);
+        using namespace boost::posix_time;
+        try {
+            conf.reset_duration = duration_from_string(conf.reset_duration_string);
+            LOG(INFO) << "Reset duration: " << conf.reset_duration;
+        } catch (std::exception &e) {
+            LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
+            exit(1);
+        }
 
-    taskspawn(startup);
-
-    return app.run();
+        task::spawn(startup);
+        app.run();
+    });
 }

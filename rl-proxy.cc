@@ -8,7 +8,6 @@
 #include "credit-client.hh"
 
 using namespace ten;
-const size_t default_stacksize=256*1024;
 
 struct proxy_config : app_config {
     std::string backend_host;
@@ -341,8 +340,8 @@ static http_request normalize_request(http_exchange &ex) {
     return r;
 }
 
-static void mirror_task(http_request &r, 
-        std::shared_ptr<http_pool> &mirror_pool
+static void mirror_task(http_request r,
+        const std::shared_ptr<http_pool> &mirror_pool
         )
 {
     for (unsigned i=0; i<conf.retry_limit; ++i) {
@@ -416,7 +415,9 @@ static void proxy_if_credits(http_exchange &ex,
         uint64_t count = request_count++;
         unsigned mod = conf.mirror_percentage / 100.0f;
         if (mod && (count % mod) == 0) {
-            taskspawn(std::bind(mirror_task, r, mirror_pool));
+            task::spawn([=] {
+                mirror_task(r, mirror_pool);
+            });
         }
     }
 
@@ -550,90 +551,91 @@ static void startup() {
 }
 
 int main(int argc, char *argv[]) {
-    application app{SCM_VERSION, conf};
-    namespace po = boost::program_options;
-    app.opts.configuration.add_options()
-        ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
-        ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(8080), "listening port")
-        ("credit-server", po::value<std::string>(&conf.credit_server_host)->default_value("localhost"),
-         "credit-server host:port")
-        ("credit-limit", po::value<unsigned>(&conf.credit_limit)->default_value(3600),
-         "credit limit given to new clients")
-        ("vhost", po::value<std::string>(&conf.vhost),
-         "use this virtual host address in Host header to backend")
-        ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"),
-         "duration for credit reset interval in hh:mm:ss format")
-        ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
-        ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
-        ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
-        ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
-        ("lifetime", po::value<unsigned>(&conf.connection_lifetime_seconds)->default_value(5*60),
-         "backend http connection lifetime in seconds")
-        ("connect-timeout", po::value<unsigned>(&conf.connect_timeout_seconds)->default_value(10),
-         "socket connection timeout in seconds")
-        ("rw-timeout", po::value<unsigned>(&conf.rw_timeout_seconds)->default_value(0),
-         "socket recv/send timeout in seconds")
-        ("use-xff", po::value<bool>(&conf.use_xff)->zero_tokens(),
-         "trust and use the ip from X-Forwarded-For when available")
-        ("secure-log", po::value<bool>(&conf.secure_log)->zero_tokens(),
-         "secure logging format")
-        ("custom-errors", po::value<bool>(&conf.custom_errors)->zero_tokens(),
-         "fetch custom error messages from backend")
-        ("mirror-percentage", po::value<unsigned>(&conf.mirror_percentage)->default_value(0),
-         "percentage of traffic to mirror")
-        ("mirror", po::value<std::string>(&conf.mirror_host), "mirror backend host:port address")
-    ;
-    app.opts.pdesc.add("backend", -1);
+    return task::main([&] {
+        application app{SCM_VERSION, conf};
+        namespace po = boost::program_options;
+        app.opts.configuration.add_options()
+            ("listen,l", po::value<std::string>(&conf.listen_address)->default_value("0.0.0.0"), "listening address")
+            ("port,p", po::value<unsigned short>(&conf.listen_port)->default_value(8080), "listening port")
+            ("credit-server", po::value<std::string>(&conf.credit_server_host)->default_value("localhost"),
+             "credit-server host:port")
+            ("credit-limit", po::value<unsigned>(&conf.credit_limit)->default_value(3600),
+             "credit limit given to new clients")
+            ("vhost", po::value<std::string>(&conf.vhost),
+             "use this virtual host address in Host header to backend")
+            ("reset-duration", po::value<std::string>(&conf.reset_duration_string)->default_value("1:00:00"),
+             "duration for credit reset interval in hh:mm:ss format")
+            ("backend", po::value<std::string>(&conf.backend_host), "backend host:port address")
+            ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
+            ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
+            ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
+            ("lifetime", po::value<unsigned>(&conf.connection_lifetime_seconds)->default_value(5*60),
+             "backend http connection lifetime in seconds")
+            ("connect-timeout", po::value<unsigned>(&conf.connect_timeout_seconds)->default_value(10),
+             "socket connection timeout in seconds")
+            ("rw-timeout", po::value<unsigned>(&conf.rw_timeout_seconds)->default_value(0),
+             "socket recv/send timeout in seconds")
+            ("use-xff", po::value<bool>(&conf.use_xff)->zero_tokens(),
+             "trust and use the ip from X-Forwarded-For when available")
+            ("secure-log", po::value<bool>(&conf.secure_log)->zero_tokens(),
+             "secure logging format")
+            ("custom-errors", po::value<bool>(&conf.custom_errors)->zero_tokens(),
+             "fetch custom error messages from backend")
+            ("mirror-percentage", po::value<unsigned>(&conf.mirror_percentage)->default_value(0),
+             "percentage of traffic to mirror")
+            ("mirror", po::value<std::string>(&conf.mirror_host), "mirror backend host:port address")
+        ;
+        app.opts.pdesc.add("backend", -1);
 
-    app.parse_args(argc, argv);
-    conf.backend_port = 0;
-    parse_host_port(conf.backend_host, conf.backend_port);
-    parse_host_port(conf.mirror_host, conf.mirror_port);
+        app.parse_args(argc, argv);
+        conf.backend_port = 0;
+        parse_host_port(conf.backend_host, conf.backend_port);
+        parse_host_port(conf.mirror_host, conf.mirror_port);
 
-    if (conf.backend_host.empty() || conf.backend_port == 0) {
-        std::cerr << "Error: backend host:port address required\n\n";
-        app.showhelp();
-        exit(EXIT_FAILURE);
-    }
-    LOG(INFO) << "backend: " << conf.backend_host << ":" << conf.backend_port;
+        if (conf.backend_host.empty() || conf.backend_port == 0) {
+            std::cerr << "Error: backend host:port address required\n\n";
+            app.showhelp();
+            exit(EXIT_FAILURE);
+        }
+        LOG(INFO) << "backend: " << conf.backend_host << ":" << conf.backend_port;
 
-    if (!conf.mirror_host.empty()) {
-        LOG(INFO) << "mirroring " << conf.mirror_percentage
-            << "% of traffic to: " << conf.mirror_host << ":" << conf.mirror_port;
-    }
+        if (!conf.mirror_host.empty()) {
+            LOG(INFO) << "mirroring " << conf.mirror_percentage
+                << "% of traffic to: " << conf.mirror_host << ":" << conf.mirror_port;
+        }
 
-    if (conf.secret.empty()) {
-        std::cerr << "Error: secret key is required\n\n";
-        app.showhelp();
-        exit(EXIT_FAILURE);
-    }
-    keng.secret = conf.secret;
+        if (conf.secret.empty()) {
+            std::cerr << "Error: secret key is required\n\n";
+            app.showhelp();
+            exit(EXIT_FAILURE);
+        }
+        keng.secret = conf.secret;
 
-    using boost::posix_time::duration_from_string;
-    try {
-        conf.reset_duration = duration_from_string(conf.reset_duration_string);
-        LOG(INFO) << "Reset duration: " << conf.reset_duration;
-    } catch (std::exception &e) {
-        LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
-        exit(EXIT_FAILURE);
-    }
+        using boost::posix_time::duration_from_string;
+        try {
+            conf.reset_duration = duration_from_string(conf.reset_duration_string);
+            LOG(INFO) << "Reset duration: " << conf.reset_duration;
+        } catch (std::exception &e) {
+            LOG(ERROR) << "Bad reset duration: " << conf.reset_duration_string;
+            exit(EXIT_FAILURE);
+        }
 
-    using std::chrono::milliseconds;
-    using std::chrono::seconds;
-    using std::chrono::duration_cast;   
-    if (conf.connect_timeout_seconds) {
-        // TODO: this is not used yet.
-        conf.connect_timeout = duration_cast<milliseconds>(seconds{conf.connect_timeout_seconds});
-    }
-    if (conf.rw_timeout_seconds) {
-        conf.rw_timeout = duration_cast<milliseconds>(seconds{conf.rw_timeout_seconds});
-    }
-    if (conf.connection_lifetime_seconds) {
-        conf.connection_lifetime = seconds{conf.connection_lifetime_seconds};
-    }
+        using std::chrono::milliseconds;
+        using std::chrono::seconds;
+        using std::chrono::duration_cast;   
+        if (conf.connect_timeout_seconds) {
+            // TODO: this is not used yet.
+            conf.connect_timeout = duration_cast<milliseconds>(seconds{conf.connect_timeout_seconds});
+        }
+        if (conf.rw_timeout_seconds) {
+            conf.rw_timeout = duration_cast<milliseconds>(seconds{conf.rw_timeout_seconds});
+        }
+        if (conf.connection_lifetime_seconds) {
+            conf.connection_lifetime = seconds{conf.connection_lifetime_seconds};
+        }
 
-    // large stack needed for getaddrinfo
-    taskspawn(startup, 8*1024*1024);
-    return app.run();
+        task::spawn(startup);
+        app.run();
+    });
 }
 
