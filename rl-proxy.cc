@@ -26,12 +26,12 @@ struct proxy_config : app_config {
     std::string blacklist_file;
     // these are for program_options
     unsigned connect_timeout_seconds;
-    unsigned recv_timeout_seconds;
-    unsigned send_timeout_seconds;
+    unsigned rw_timeout_seconds;
+    unsigned connection_lifetime_seconds;
     // above are converted to these for use
     optional_timeout connect_timeout;
-    optional_timeout recv_timeout;
-    optional_timeout send_timeout;
+    optional_timeout rw_timeout;
+    http_client::lifetime_t connection_lifetime;
     bool use_xff = false; // ok to trust X-Forwarded-For header
     bool secure_log = false;
     bool custom_errors = false;
@@ -348,7 +348,7 @@ static void mirror_task(http_request &r,
     for (unsigned i=0; i<conf.retry_limit; ++i) {
         try {
             http_pool::scoped_resource cs{*mirror_pool};
-            http_response resp = cs->perform(r, conf.send_timeout);
+            http_response resp = cs->perform(r, conf.rw_timeout);
             if (!resp.close_after()) {
                 // try to keep connection persistent by returning it to the pool
                 cs.done();
@@ -366,7 +366,7 @@ static void mirror_task(http_request &r,
 static void do_proxy(http_request &r, http_exchange &ex,
         http_pool::scoped_resource &cs)
 {
-    ex.resp = cs->perform(r, conf.send_timeout);
+    ex.resp = cs->perform(r, conf.rw_timeout);
     if (!ex.resp.close_after()) {
         // try to keep connection persistent by returning it to the pool
         cs.done();
@@ -498,7 +498,7 @@ static void fetch_custom_error(http_pool &pool,
 {
     try {
         http_pool::scoped_resource cs{pool};
-        http_response resp = cs->get(error_resource, conf.send_timeout);
+        http_response resp = cs->get(error_resource, conf.rw_timeout);
         if (resp.status_code == 200) {
             auto ct_hdr = resp.get("Content-Type");
             error_resp.set_body(std::move(resp.body), (ct_hdr ? *ct_hdr : std::string()));
@@ -516,7 +516,10 @@ static void fetch_custom_error(http_pool &pool,
 static void startup() {
     using namespace std::placeholders;
     try {
-        auto pool = std::make_shared<http_pool>(conf.backend_host, conf.backend_port);
+        auto pool = std::make_shared<http_pool>(conf.backend_host,
+                conf.backend_port,
+                nullopt,
+                conf.connection_lifetime);
         std::shared_ptr<http_pool> mirror_pool;
         if (conf.mirror_percentage > 0 && !conf.mirror_host.empty()) {
             mirror_pool = std::make_shared<http_pool>(conf.mirror_host, conf.mirror_port);
@@ -564,12 +567,12 @@ int main(int argc, char *argv[]) {
         ("secret", po::value<std::string>(&conf.secret), "hmac secret key")
         ("grandfather", po::value<std::string>(&conf.grandfather_file), "grandfathered keys file")
         ("blacklist", po::value<std::string>(&conf.blacklist_file), "blacklisted keys file")
+        ("lifetime", po::value<unsigned>(&conf.connection_lifetime_seconds)->default_value(5*60),
+         "backend http connection lifetime in seconds")
         ("connect-timeout", po::value<unsigned>(&conf.connect_timeout_seconds)->default_value(10),
          "socket connection timeout in seconds")
-        ("recv-timeout", po::value<unsigned>(&conf.recv_timeout_seconds)->default_value(0),
-         "socket recv timeout in seconds")
-        ("send-timeout", po::value<unsigned>(&conf.send_timeout_seconds)->default_value(0),
-         "socket send timeout in seconds")
+        ("rw-timeout", po::value<unsigned>(&conf.rw_timeout_seconds)->default_value(0),
+         "socket recv/send timeout in seconds")
         ("use-xff", po::value<bool>(&conf.use_xff)->zero_tokens(),
          "trust and use the ip from X-Forwarded-For when available")
         ("secure-log", po::value<bool>(&conf.secure_log)->zero_tokens(),
@@ -619,13 +622,14 @@ int main(int argc, char *argv[]) {
     using std::chrono::seconds;
     using std::chrono::duration_cast;   
     if (conf.connect_timeout_seconds) {
+        // TODO: this is not used yet.
         conf.connect_timeout = duration_cast<milliseconds>(seconds{conf.connect_timeout_seconds});
     }
-    if (conf.recv_timeout_seconds) {
-        conf.recv_timeout = duration_cast<milliseconds>(seconds{conf.recv_timeout_seconds});
+    if (conf.rw_timeout_seconds) {
+        conf.rw_timeout = duration_cast<milliseconds>(seconds{conf.rw_timeout_seconds});
     }
-    if (conf.send_timeout_seconds) {
-        conf.send_timeout = duration_cast<milliseconds>(seconds{conf.send_timeout_seconds});
+    if (conf.connection_lifetime_seconds) {
+        conf.connection_lifetime = seconds{conf.connection_lifetime_seconds};
     }
 
     // large stack needed for getaddrinfo
