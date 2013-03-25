@@ -539,7 +539,7 @@ static void startup() {
                 conf.credit_server_port,
                 conf.blacklist_file,
                 conf.grandfather_file);
-        std::shared_ptr<http_server> proxy = std::make_shared<http_server>(128*1024);
+        std::shared_ptr<http_server> proxy = std::make_shared<http_server>(nostacksize);
         proxy->set_log_callback(log_request);
         proxy->add_route("/", std::bind(route_pass_through, _1, pool));
         proxy->add_route("/credit.json", std::bind(route_credit_request, _1, cc));
