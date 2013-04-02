@@ -50,28 +50,17 @@ static std::pair<bool, std::string> get_jsonp(http_exchange &ex) {
     return std::make_pair(true, i->second);
 }
 
-static void make_jsonp_response(http_exchange &ex, const std::string &callback) {
-    auto content_type = ex.resp.get("Content-Type");
+static void make_jsonp_response(http_response &resp, const std::string &callback) {
+    auto content_type = resp.get("Content-Type");
     std::stringstream ss;
     if (content_type && content_type->find("json") != std::string::npos) {
         // wrap response in JSONP
-        ss << callback << "(" << ex.resp.body << ");\n";
+        ss << callback << "(" << resp.body << ");\n";
     } else {
-        std::string msg;
-        auto warn_hdr = ex.resp.get("Warning");
-        if (warn_hdr)
-            msg = *warn_hdr;
-        else
-            msg = ex.resp.reason();
-        json status{
-            {"status", static_cast<json_int_t>(ex.resp.status_code)},
-            {"reason", msg}
-        };
-        ss << callback << "(" << status << ");\n";
     }
-    ex.resp.set_body(std::move(ss.str()), "application/javascript; charset=utf-8");
+    resp.set_body(std::move(ss.str()), "application/javascript; charset=utf-8");
     // must return valid javascript or websites that include this JSONP call will break
-    ex.resp.status_code = 200;
+    resp.status_code = 200;
 }
 
 // globals
@@ -307,7 +296,7 @@ static void route_credit_request(http_exchange &ex, std::shared_ptr<credit_clien
     ex.resp.set_body(j.dump() + "\n", "application/json");
     auto jp = get_jsonp(ex);
     if (jp.first) {
-        make_jsonp_response(ex, jp.second);
+        make_jsonp_response(ex.resp, jp.second);
     }
     ex.send_response();
 }
@@ -363,15 +352,101 @@ static void mirror_task(http_request r,
 }
 
 static void do_proxy(http_request &r, http_exchange &ex,
-        http_pool::scoped_resource &cs)
+        http_pool::scoped_resource &cs, optional<apikey> key, uint64_t value)
 {
-    ex.resp = cs->perform(r, conf.rw_timeout);
+    auto jp = get_jsonp(ex);
+    bool chunked = false;
+    buffer wbuf{4096};
+    auto on_content_part = [&](http_response &resp, const char *part, size_t plen) {
+        // special case when jsonp error response sent
+        if (jp.first && resp.body.size()) return;
+        if (chunked) {
+            wbuf.reserve(64+plen+2);
+            int len = snprintf(wbuf.back(), wbuf.available(), "%zx\r\n", plen);
+            // TODO: should really use writev here
+            wbuf.commit(len);
+            wbuf.reserve(plen+2);
+            memcpy(wbuf.back(), part, plen);
+            wbuf.commit(plen);
+            memcpy(wbuf.back(), "\r\n", 2);
+            wbuf.commit(2);
+            ssize_t nw = ex.sock.send(wbuf.front(), wbuf.size());
+            if (nw <= 0) { throw http_send_error(); }
+            wbuf.remove(nw);
+        } else {
+            ssize_t nw = ex.sock.send(part, plen);
+            if (nw <= 0) { throw http_send_error(); }
+        }
+    };
+    auto on_headers = [&] (http_response &resp) {
+        optional<std::string> tx_enc_hdr = resp.get("Transfer-Encoding");
+        if (tx_enc_hdr && *tx_enc_hdr == "chunked") {
+            chunked = true;
+        }
+        if (key) {
+            boost::posix_time::time_duration till_reset;
+            calculate_reset_time(conf.reset_duration, reset_time, till_reset);
+            add_rate_limit_headers(resp, key->data.credits,
+                    value > key->data.credits ? 0 : key->data.credits - value);
+        }
+        if (jp.first) { // is this jsonp?
+            // must return valid javascript or websites that include this JSONP call will break
+            resp.status_code = 200;
+            auto content_type = resp.get("Content-Type");
+            if (content_type && content_type->find("json") != std::string::npos) {
+                resp.set("Content-Type", "application/javascript; charset=utf-8");
+                // need to wrap response as JSONP
+                auto content_length = resp.get<size_t>("Content-Length");
+                if (content_length) {
+                    // add length of callback wrapper: callback();\n
+                    size_t new_length = *content_length + jp.second.size() + 4;
+                    resp.set("Content-Length", new_length);
+                }
+                if (chunked) {
+                    // prepend callback part
+                    std::stringstream ss;
+                    ss << jp.second << "(";
+                    std::string data = std::move(ss.str());
+                    on_content_part(resp, data.data(), data.size());
+                }
+            } else {
+                std::stringstream ss;
+                std::string msg;
+                auto warn_hdr = resp.get("Warning");
+                if (warn_hdr)
+                    msg = *warn_hdr;
+                else
+                    msg = resp.reason();
+                json status{
+                    {"status", static_cast<json_int_t>(resp.status_code)},
+                    {"reason", msg}
+                };
+                ss << jp.second << "(" << status << ");\n";
+                resp.set_body(std::move(ss.str()), "application/javascript; charset=utf-8");
+            }
+        }
+        ex.resp = resp;
+        ssize_t nw = ex.send_response();
+        if (nw <= 0) { throw http_send_error(); }
+    };
+
+    cs->perform(r, conf.rw_timeout, on_headers, on_content_part);
+
+    if (jp.first) {
+        // close json
+        on_content_part(ex.resp, ");\n", 3);
+    }
+
+    if (chunked) {
+        // send end chunk
+        size_t nw = ex.sock.send("0\r\n\r\n", 5, 0, conf.rw_timeout);
+        if (nw <= 0) throw http_send_error();
+    }
+
     if (!ex.resp.close_after()) {
         // try to keep connection persistent by returning it to the pool
         cs.done();
     }
-    // HTTP/1.1 requires content-length
-    ex.resp.set("Content-Length", ex.resp.body.size());
 }
 
 static void proxy_if_credits(http_exchange &ex,
@@ -424,11 +499,7 @@ static void proxy_if_credits(http_exchange &ex,
     for (unsigned i=0; i<conf.retry_limit; ++i) {
         http_pool::scoped_resource cs{*pool};
         try {
-            do_proxy(r, ex, cs);
-            boost::posix_time::time_duration till_reset;
-            calculate_reset_time(conf.reset_duration, reset_time, till_reset);
-            add_rate_limit_headers(ex.resp, key.data.credits,
-                value > key.data.credits ? 0 : key.data.credits - value);
+            do_proxy(r, ex, cs, key, value);
             return;
         } catch (http_dial_error &e) {
             throw;
@@ -447,14 +518,6 @@ static void route_proxy_request(http_exchange &ex,
 {
     try {
         proxy_if_credits(ex, cc, pool, mirror_pool);
-        auto jp = get_jsonp(ex);
-        if (jp.first) { // is this jsonp?
-            make_jsonp_response(ex, jp.second);
-        }
-        ssize_t nw = ex.send_response();
-        if (nw <= 0) {
-            PLOG(ERROR) << "response send error: " << log_r(ex);
-        }
     } catch (http_error &e) {
         LOG(ERROR) << "http error (" << e.what() << ") " << log_r(ex);
         ex.resp = resp_connect_error_503;
@@ -471,11 +534,7 @@ static void route_pass_through(http_exchange &ex,
         for (unsigned i=0; i<conf.retry_limit; ++i) {
             try {
                 http_pool::scoped_resource cs{*pool};
-                do_proxy(ex.req, ex, cs);
-                ssize_t nw = ex.send_response();
-                if (nw <= 0) {
-                    PLOG(ERROR) << "response send error: " << log_r(ex);
-                }
+                do_proxy(ex.req, ex, cs, nullopt, 0);
                 return;
             } catch (http_dial_error &e) {
                 throw;
