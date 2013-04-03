@@ -1,3 +1,10 @@
+ub-rlproxy (0.1.5-1) lucid; urgency=low
+
+  * http streaming responses
+  * support for chunked encoding
+
+ -- Jason Toffaletti <jason@topsy.com>  Tue, 02 Apr 2013 17:25:44 -0700
+
 ub-rlproxy (0.1.4-1) lucid; urgency=low
 
   * credit-client improvements for key lookup
