@@ -1,3 +1,10 @@
+ub-rlproxy (0.1.7-1) lucid; urgency=low
+
+  * update libten
+  * build with debug symbols
+
+ -- Jason Toffaletti <jason@topsy.com>  Thu, 18 Apr 2013 14:52:26 -0700
+
 ub-rlproxy (0.1.6-1) lucid; urgency=low
 
   * fix jsonp support
