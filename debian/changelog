@@ -1,3 +1,9 @@
+ub-rlproxy (0.1.8-1) lucid; urgency=low
+
+  * log http error when unparsed data is left, instead of aborting.
+
+ -- Jason Toffaletti <jason@topsy.com>  Thu, 18 Apr 2013 16:17:21 -0700
+
 ub-rlproxy (0.1.7-1) lucid; urgency=low
 
   * update libten
