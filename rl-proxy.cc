@@ -389,6 +389,7 @@ static void do_proxy(http_request &r, http_exchange &ex,
             add_rate_limit_headers(resp, key->data.credits,
                     value > key->data.credits ? 0 : key->data.credits - value);
         }
+        std::string data;
         if (jp.first) { // is this jsonp?
             // must return valid javascript or websites that include this JSONP call will break
             resp.status_code = 200;
@@ -402,13 +403,10 @@ static void do_proxy(http_request &r, http_exchange &ex,
                     size_t new_length = *content_length + jp.second.size() + 4;
                     resp.set("Content-Length", new_length);
                 }
-                if (chunked) {
-                    // prepend callback part
-                    std::stringstream ss;
-                    ss << jp.second << "(";
-                    std::string data = std::move(ss.str());
-                    on_content_part(resp, data.data(), data.size());
-                }
+                // prepend callback part
+                std::stringstream ss;
+                ss << jp.second << "(";
+                data = std::move(ss.str());
             } else {
                 std::stringstream ss;
                 std::string msg;
@@ -428,12 +426,16 @@ static void do_proxy(http_request &r, http_exchange &ex,
         ex.resp = resp;
         ssize_t nw = ex.send_response();
         if (nw <= 0) { throw http_send_error(); }
+        // send any extra data we need to include
+        if (!data.empty()) {
+            on_content_part(resp, data.data(), data.size());
+        }
     };
 
     cs->perform(r, conf.rw_timeout, on_headers, on_content_part);
 
     if (jp.first) {
-        // close json
+        // close jsonp
         on_content_part(ex.resp, ");\n", 3);
     }
 
