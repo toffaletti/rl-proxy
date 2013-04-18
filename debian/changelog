@@ -1,3 +1,9 @@
+ub-rlproxy (0.1.6-1) lucid; urgency=low
+
+  * fix jsonp support
+
+ -- Jason Toffaletti <jason@topsy.com>  Wed, 17 Apr 2013 17:05:16 -0700
+
 ub-rlproxy (0.1.5-1) lucid; urgency=low
 
   * http streaming responses
