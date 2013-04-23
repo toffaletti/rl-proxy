@@ -162,7 +162,6 @@ static std::string get_request_apikey(http_exchange &ex) {
 static void log_api_request(http_exchange &ex, apikey akey, apikey_state state, uint64_t credit_value) {
     using namespace std::chrono;
     auto elapsed = steady_clock::now() - ex.start;
-    auto cl_hdr = ex.resp.get("Content-Length");
     auto rawkey = get_request_apikey(ex);
     std::string keyinfo = "";
     if (!rawkey.empty()) {
@@ -183,7 +182,7 @@ static void log_api_request(http_exchange &ex, apikey akey, apikey_state state, 
             ex.req.method << " " <<
             ex.get_uri().path << " " <<
             ex.resp.status_code << " " <<
-            (cl_hdr ? *cl_hdr : "nan") << " " <<
+            ex.resp.body_length << " " <<
             duration_cast<milliseconds>(elapsed).count() << " " <<
             keyinfo;
 
@@ -193,7 +192,7 @@ static void log_api_request(http_exchange &ex, apikey akey, apikey_state state, 
             ex.req.method << " " <<
             ex.req.uri << " " <<
             ex.resp.status_code << " " <<
-            (cl_hdr ? *cl_hdr : "nan") << " " <<
+            ex.resp.body_length << " " <<
             duration_cast<milliseconds>(elapsed).count() << " " <<
             keyinfo;
     }
@@ -373,6 +372,7 @@ static void do_proxy(http_request &r, http_exchange &ex,
             ssize_t nw = ex.sock.send(wbuf.front(), wbuf.size());
             if (nw <= 0) { throw http_send_error(); }
             wbuf.remove(nw);
+            ex.resp.body_length += plen;
         } else {
             ssize_t nw = ex.sock.send(part, plen);
             if (nw <= 0) { throw http_send_error(); }
@@ -428,7 +428,7 @@ static void do_proxy(http_request &r, http_exchange &ex,
         if (nw <= 0) { throw http_send_error(); }
         // send any extra data we need to include
         if (!data.empty()) {
-            on_content_part(resp, data.data(), data.size());
+            on_content_part(ex.resp, data.data(), data.size());
         }
     };
 
