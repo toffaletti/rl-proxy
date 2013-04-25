@@ -1,3 +1,10 @@
+ub-rlproxy (0.1.9-1) lucid; urgency=low
+
+  * improve logging of ip address and content length for chunked.
+  * attempt to excluse double-conversion from package
+
+ -- Jason Toffaletti <jason@topsy.com>  Wed, 24 Apr 2013 22:14:58 -0700
+
 ub-rlproxy (0.1.8-1) lucid; urgency=low
 
   * log http error when unparsed data is left, instead of aborting.
