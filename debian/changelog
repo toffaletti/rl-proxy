@@ -1,3 +1,9 @@
+ub-rlproxy (0.1.10-1) lucid; urgency=low
+
+  * fix more double-conversion packaging issues 
+
+ -- Jason Toffaletti <jason@topsy.com>  Wed, 24 Apr 2013 22:24:52 -0700
+
 ub-rlproxy (0.1.9-1) lucid; urgency=low
 
   * improve logging of ip address and content length for chunked.
