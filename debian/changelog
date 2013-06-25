@@ -1,3 +1,10 @@
+ub-rlproxy (0.1.11-1) lucid; urgency=low
+
+  * fix memory leak in rl-proxy
+  * exit credit-server when it can't listen
+
+ -- Jason Toffaletti <jason@topsy.com>  Tue, 25 Jun 2013 14:10:56 -0700
+
 ub-rlproxy (0.1.10-1) lucid; urgency=low
 
   * fix more double-conversion packaging issues 
