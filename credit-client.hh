@@ -180,6 +180,8 @@ public:
                 val = pkt.value;
                 return true;
             } catch (deadline_reached &) {}
+            size_t e = tasks.erase(pkt.xid);
+            VLOG(3) << "timeout for: " << pkt.xid << " erased: " << e;
         }
         return false;
     }
@@ -273,5 +275,7 @@ private:
                 tasks.erase(it);
             }
         }
+        LOG(ERROR) << "recv task exiting";
+        tasks.clear();
     }
 };

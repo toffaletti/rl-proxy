@@ -91,15 +91,6 @@ private:
     }
 };
 
-void startup() {
-    try {
-        credit_server server;
-        server.serve(conf.listen_address, conf.listen_port);
-    } catch (std::exception &e) {
-        LOG(ERROR) << "server error: " << e.what();
-    }
-}
-
 int main(int argc, char *argv[]) {
     return task::main([&] {
         application app{"0.0.1", conf};
@@ -120,7 +111,8 @@ int main(int argc, char *argv[]) {
             exit(1);
         }
 
-        task::spawn(startup);
+        credit_server server;
+        server.serve(conf.listen_address, conf.listen_port);
         app.run();
     });
 }
