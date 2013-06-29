@@ -490,8 +490,7 @@ static void proxy_if_credits(http_exchange &ex,
 
     if (mirror_pool) {
         uint64_t count = request_count++;
-        unsigned mod = conf.mirror_percentage / 100.0f;
-        if (mod && (count % mod) == 0) {
+        if (count % 100 < conf.mirror_percentage) {
             task::spawn([=] {
                 mirror_task(r, mirror_pool);
             });
