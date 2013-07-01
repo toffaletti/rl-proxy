@@ -1,3 +1,9 @@
+ub-rlproxy (0.1.12-1) lucid; urgency=low
+
+  * fix traffic mirroring percentage
+
+ -- Jason Toffaletti <jason@topsy.com>  Mon, 01 Jul 2013 16:20:47 -0700
+
 ub-rlproxy (0.1.11-1) lucid; urgency=low
 
   * fix memory leak in rl-proxy
